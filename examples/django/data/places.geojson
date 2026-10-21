@@ -1,0 +1,10 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {"type": "Feature", "properties": {"name": "Rio de Janeiro"}, "geometry": {"type": "Point", "coordinates": [-43.1729, -22.9068]}},
+    {"type": "Feature", "properties": {"name": "São Paulo"}, "geometry": {"type": "Point", "coordinates": [-46.6333, -23.5505]}},
+    {"type": "Feature", "properties": {"name": "Belo Horizonte"}, "geometry": {"type": "Point", "coordinates": [-43.9378, -19.9208]}},
+    {"type": "Feature", "properties": {"name": "Brasília"}, "geometry": {"type": "Point", "coordinates": [-47.8825, -15.7942]}},
+    {"type": "Feature", "properties": {"name": "Manaus"}, "geometry": {"type": "Point", "coordinates": [-60.0217, -3.1190]}}
+  ]
+}

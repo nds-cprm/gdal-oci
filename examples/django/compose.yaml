@@ -1,0 +1,33 @@
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: geoapp
+      POSTGRES_USER: geoapp
+      POSTGRES_PASSWORD: geoapp
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geoapp -d geoapp"]
+      interval: 2s
+      retries: 30
+
+  web:
+    build:
+      context: .
+      args:
+        GDAL_IMAGE: ${GDAL_IMAGE:-docker.io/ndscprm/gdal}
+        GDAL_TAG: ${GDAL_TAG:-3.12.4-py3.12}
+    # UID arbitrário: o nss_wrapper da imagem base cria o usuário virtual
+    user: "12345:0"
+    environment:
+      DJANGO_SECRET_KEY: change-me
+      DJANGO_MIGRATE: "true"
+      DJANGO_ALLOWED_HOSTS: localhost,127.0.0.1
+      POSTGRES_HOST: db
+      POSTGRES_DB: geoapp
+      POSTGRES_USER: geoapp
+      POSTGRES_PASSWORD: geoapp
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy

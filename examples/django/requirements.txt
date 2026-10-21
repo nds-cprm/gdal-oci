@@ -1,0 +1,4 @@
+Django==5.2.18
+# sem [binary]: usa o libpq5 da imagem (o mesmo do driver PostGIS do GDAL), em vez de uma cópia embutida
+psycopg==3.3.6
+gunicorn==26.2.0

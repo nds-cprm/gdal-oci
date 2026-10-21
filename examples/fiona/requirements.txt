@@ -1,0 +1,3 @@
+# Dependências da aplicação, instaladas no mesmo venv que o fiona (estágio build).
+# Bibliotecas que dependem do GDAL entram no --no-binary do Dockerfile, não aqui.
+shapely==2.1.2
