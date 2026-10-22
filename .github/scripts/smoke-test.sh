@@ -59,6 +59,24 @@ run sh -c '
     ! dpkg-query -W -f "\${Status}\n" "libthrift*" 2> /dev/null | grep -q "ok installed"'
 echo "## Parquet ok"
 
+echo "## venv: versões fixadas em requirements/venv.txt"
+# shellcheck disable=SC2046
+run python -c '
+import sys, importlib.metadata as m
+bad = [p for p in sys.argv[1:] if m.version(p.split("==")[0]) != p.split("==")[1]]
+assert not bad, bad
+print(" ".join(sys.argv[1:]))' $(sed -n 's/^\([A-Za-z0-9_.-]*\)==\([^ ]*\).*/\1==\2/p' "$(dirname "$0")/../../requirements/venv.txt")
+
+echo "## pip: só o do venv (o pip do sistema da imagem python é removido)"
+run sh -c '
+    set -e
+    ! /usr/local/bin/python3 -m pip --version > /dev/null 2>&1
+    test "$(command -v pip)" = /opt/geosgb/venv/bin/pip
+    pip --version > /dev/null
+    # ensurepip continua disponível para imagens derivadas criarem venvs
+    /usr/local/bin/python3 -m venv /tmp/v && /tmp/v/bin/pip --version > /dev/null'
+echo "## pip ok"
+
 echo "## proteções de compilação (HARDENING_CFLAGS/LDFLAGS)"
 # só no devel, que tem readelf; os binários do release são os mesmos, sem os símbolos de debug
 run sh -c '

@@ -202,13 +202,11 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
     echo "${BASE_DIR}/lib" > /etc/ld.so.conf.d/geosgb.conf && \
     ldconfig
 
-# Configure Python virtualenv
-# GDAL bindings built against numpy 2 also run with numpy 1.x (the reverse fails at import)
-ARG NUMPY_VERSION=2.5.4
-
-RUN python3 -m venv --prompt geosgb ${BASE_DIR}/venv && \
-    ${BASE_DIR}/venv/bin/pip install --upgrade pip setuptools wheel && \
-    ${BASE_DIR}/venv/bin/pip install "numpy==${NUMPY_VERSION}"
+# Configure Python virtualenv: pip, setuptools, wheel (GDAL bindings build) and numpy, pinned with
+# hashes in requirements/venv.txt (generated from requirements/venv.in)
+RUN --mount=type=bind,source=requirements/venv.txt,target=/tmp/venv-requirements.txt \
+    python3 -m venv --prompt geosgb ${BASE_DIR}/venv && \
+    ${BASE_DIR}/venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/venv-requirements.txt
 
 # Compile and install GDAL
 ARG GDAL_VERSION=3.12.4
@@ -307,6 +305,10 @@ RUN apt-get -y update && \
     apt-get -y autoremove && \
     rm -rf /var/lib/apt/lists/*
 
+# the python base image ships its own pip in /usr/local, outdated and unused (pip resolves to the venv);
+# ensurepip's bundled wheel stays, so `python3 -m venv` still works in derived images
+RUN /usr/local/bin/python3 -m pip uninstall -y -q pip
+
 # Derived images drop *.sh scripts in /docker-entrypoint.d: executable ones run, the others are sourced
 COPY --chmod=755 docker-entrypoint.sh /docker-entrypoint.sh
 
@@ -363,7 +365,9 @@ RUN --mount=type=bind,from=staging,source=/tmp/runtime-packages.txt,target=/tmp/
     apt-get install -y --no-install-recommends --no-install-suggests \
         libnss-wrapper && \
     apt-get -y autoremove && \
-    rm -rf /var/lib/apt/lists/*
+    rm -rf /var/lib/apt/lists/* && \
+    # system pip of the python base image, outdated and unused (same as devel)
+    /usr/local/bin/python3 -m pip uninstall -y -q pip
 
 COPY --from=staging ${BASE_DIR} ${BASE_DIR}
 

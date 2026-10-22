@@ -34,6 +34,7 @@ As imagens são publicadas em `docker.io/ndscprm/gdal`. A tag é formada pela **
 - As imagens são **refeitas toda semana** para incorporar as correções de segurança do Debian e do Python. As tags `<gdal>-py<python>[-devel]` são móveis e sempre apontam para o build mais recente. As tags com data (`-<AAAAMMDD>`, em UTC) identificam um build e nunca são sobrescritas; um segundo build no mesmo dia recebe `.2`, `.3`, ... Para fixar exatamente um build, use a tag com data ou o digest (`docker.io/ndscprm/gdal:3.12.4-py3.12@sha256:…`).
 - As outras versões incluídas na imagem (Debian, Arrow, Oracle Instant Client, numpy) não entram na tag.
 - Nenhuma tag é publicada se o build tiver vulnerabilidade **crítica com correção disponível** (verificação no CI com o Grype). Os CVEs que não se aplicam a esta imagem, por exemplo de drivers do GDAL que não são compilados, estão declarados em [vex/gdal-oci.openvex.json](vex/gdal-oci.openvex.json) (OpenVEX).
+- **Tag legada:** a `3.4.3` é de 2023 e não foi gerada por este Dockerfile. Ela é mantida só para compatibilidade, **sem manutenção**: não é refeita, não recebe correções de segurança e não tem SBOM. Não use em projetos novos; migre para uma tag `<gdal>-py<python>`.
 
 ## O que vem incluído
 
@@ -185,6 +186,33 @@ Rodando como root ou com um usuário que já existe na imagem, o script não faz
 
 As opções de configuração do GDAL (`GDAL_HTTP_*`, `CPL_*`, `OGR_*` etc.) funcionam normalmente como variáveis de ambiente.
 
+### Abrindo arquivos enviados por usuários
+
+Esta seção vale para aplicações que abrem com o GDAL arquivos ou caminhos vindos de fora (upload, parâmetro de API, URL informada pelo usuário). Para o GDAL, **abrir um arquivo já é processá-lo**. Esta imagem habilita drivers que acessam a rede (WMS, WCS, WFS, OAPIF, OGCAPI, Elasticsearch, `/vsicurl/`) e drivers que abrem outros datasets por dentro (VRT e os de serviços OGC). Por isso, um "arquivo" malicioso pode fazer o servidor acessar URLs internas (SSRF). Exemplos testados nesta imagem: um `.vrt` cuja fonte é `/vsicurl/http://<host interno>/...` e um `.xml` do driver WMS apontando para um endereço interno. Nos dois casos o GDAL faz a requisição assim que o arquivo é aberto.
+
+Recomendações, da mais importante para a menos:
+
+1. **Restrinja os drivers na abertura.** Liste só os formatos que a aplicação aceita. Um arquivo de outro formato (VRT, XML do WMS etc.) é recusado:
+
+   ```python
+   from osgeo import gdal
+   gdal.UseExceptions()
+   ds = gdal.OpenEx(caminho, gdal.OF_VECTOR, allowed_drivers=["GPKG", "GeoJSON", "Parquet"])
+   ```
+
+2. **Desligue globalmente os drivers que a aplicação não usa** com `GDAL_SKIP` (nomes curtos separados por espaço, valendo para drivers raster e vetoriais). Por exemplo, numa aplicação que só lê arquivos locais:
+
+   ```dockerfile
+   ENV GDAL_SKIP="VRT WMS WCS WFS OAPIF OGCAPI Elasticsearch"
+   ```
+
+3. **Nunca repasse ao GDAL uma string do usuário como caminho.** Grave o upload com um nome gerado pela aplicação, num diretório próprio, e abra esse caminho. Isso evita prefixos como `/vsicurl/`, `/vsizip/` e `/vsis3/` e strings de conexão como `PG:`, `OCI:`, `WFS:` e `ES:`. Pelo mesmo motivo, não aceite do usuário opções de utilitários (`gdal.Translate`/`gdal.VectorTranslate`, `-sql`, `-where`), opções de configuração (`--config`, `gdal.SetConfigOption`) nem expressões do `gdal_calc` (avaliadas com `eval()`).
+4. **Restrinja a saída de rede do container** (NetworkPolicy no Kubernetes/OpenShift, regras de firewall) ao que a aplicação realmente acessa, em especial a rede interna e o endereço de metadados da nuvem (`169.254.169.254`). Isso limita o estrago se algo passar pelas camadas anteriores.
+5. **Limite os recursos.** Arquivos pequenos podem declarar dimensões enormes ou descompactar para gigabytes. Confira `RasterXSize`, `RasterYSize` e `RasterCount` antes de ler os dados. Rode com limites de memória e CPU no container e com timeout no processamento.
+6. **Isole o processo.** Rode como usuário sem privilégios (a imagem já suporta UID arbitrário). Se possível, use sistema de arquivos somente leitura (`--read-only` com `/tmp` gravável). Senhas de conexões (Oracle, PostGIS) ficam na memória do processo que abre os arquivos.
+
+Mais detalhes: [Security considerations](https://gdal.org/en/stable/user/security.html), na documentação do GDAL.
+
 ## Usando o `devel` como base
 
 ### Compilando código contra o GDAL
@@ -260,10 +288,10 @@ Para analisar um core dump gerado no `release`, abra-o no `devel` da mesma vers�
 | `ARROW_VERSION` / `ARROW_SHA256` | `26.0.0` / SHA256 do tarball |
 | `THRIFT_VERSION` / `THRIFT_SHA256` | `0.25.0` / SHA256 do tarball |
 | `HARDENING_CFLAGS` / `HARDENING_LDFLAGS` | stack protector, `_FORTIFY_SOURCE=3`, stack clash protection e RELRO completo (GDAL, Arrow e Thrift) |
-| `NUMPY_VERSION` | `2.5.4` (versão usada para compilar os bindings) |
+| numpy | `2.5.4` (versão usada para compilar os bindings; fixada com hash em [requirements/venv.txt](requirements/venv.txt), junto com pip, setuptools e wheel) |
 | Oracle Instant Client | `19.32.0.0.0` |
 
-Todos os downloads são verificados contra valores fixados no Dockerfile (SHA256 do GDAL, do Arrow, do Thrift e do Oracle). Para mudar a versão de um deles, é preciso atualizar também o SHA256 correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md).
+Todos os downloads são verificados contra valores fixados no repositório: o SHA256 do GDAL, do Arrow, do Thrift e do Oracle no Dockerfile, e os hashes dos pacotes Python do venv em [requirements/venv.txt](requirements/venv.txt) (`pip install --require-hashes`). Para mudar a versão de um deles, é preciso atualizar também o hash correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md). As imagens base `python` são referenciadas por tag, para que o rebuild semanal pegue as correções delas. O digest exato usado em cada build fica registrado no provenance.
 
 O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do repositório apt do Arrow, para que o Parquet use uma versão do Apache Thrift com as correções de segurança em dia. O Thrift do Debian trixie (0.19) tem CVEs abertos e sem previsão de correção. O Thrift fica embutido no `libparquet.so` (link estático), então não aparece como pacote na imagem.
 

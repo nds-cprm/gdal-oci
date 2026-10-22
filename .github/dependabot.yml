@@ -8,3 +8,13 @@ updates:
   groups:
     github-actions:
       patterns: ["*"]
+
+# keeps the hashed virtualenv pins (requirements/venv.in -> venv.txt, pip-compile) up to date;
+# a numpy major upgrade needs care (see the comment in venv.in)
+- package-ecosystem: pip
+  directory: /requirements
+  schedule:
+    interval: weekly
+  groups:
+    venv:
+      patterns: ["*"]
