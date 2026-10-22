@@ -2,16 +2,23 @@ name: Docker Image CI
 
 on:
   workflow_dispatch:
+  # weekly rebuild, so the images pick up the Debian/Python fixes of the base images
+  # (scheduled runs only happen on the default branch)
+  schedule:
+  - cron: "0 3 * * 1"
   #push:
   #  branches: [ "main" ]
   #pull_request:
   #  branches: [ "main" ]
-  #schedule:
-  #- cron: "0 2 * * 1-5"
+
+# least privilege for the GITHUB_TOKEN; jobs that need more ask for it
+permissions:
+  contents: read
 
 env:
   IMAGE: docker.io/ndscprm/gdal
 
+# Actions are pinned by commit SHA (the comment is the release); Dependabot keeps them up to date
 jobs:
   # One job per architecture on native runners. Images are pushed by digest only (no tag);
   # the merge job assembles the multi-platform tags from those digests.
@@ -27,22 +34,24 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
     - name: Login to Docker Hub
-      uses: docker/login-action@v3
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-    # devel first (toolchain, headers, GDAL sources and debug symbols, ~30 min to compile GDAL);
+    # devel first (toolchain, headers, GDAL sources and debug symbols; Arrow and GDAL take most of the time);
     # release reuses the devel stage from the same builder, so both come from the same GDAL build
     - name: Build and push devel image
       id: devel
-      uses: docker/build-push-action@v5.3.0
+      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
         file: Dockerfile
@@ -61,7 +70,7 @@ jobs:
     # (a cache-to on the devel step would only duplicate it in the 10 GB GHA cache)
     - name: Build and push release image
       id: release
-      uses: docker/build-push-action@v5.3.0
+      uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5.4.0
       with:
         context: .
         file: Dockerfile
@@ -72,10 +81,13 @@ jobs:
         target: release
         cache-from: type=gha,scope=${{ matrix.arch }}
         cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+        # the release stage (apt-get install of the runtime packages) is always rebuilt, so every run gets
+        # the current Debian fixes even when the cached layers did not change; it takes a couple of minutes
+        no-cache-filters: release
         sbom: true
         provenance: mode=max
 
-    # runs on the native runner of each architecture; a failure here stops the merge job,
+    # runs on the native runner of each architecture; a failure here stops the scan and merge jobs,
     # so no tag is created for a broken image
     - name: Smoke test devel and release images
       env:
@@ -95,24 +107,115 @@ jobs:
         touch "${{ runner.temp }}/digests/release/${RELEASE_DIGEST#sha256:}"
 
     - name: Upload digests
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
         name: digests-${{ matrix.arch }}
         path: ${{ runner.temp }}/digests/*
         if-no-files-found: error
         retention-days: 1
 
-  # Creates the multi-platform tags (<GDAL_VERSION>-py<PYTHON_VERSION> and <...>-devel) and scans the release
-  merge:
+  # Scans the release image of each architecture before any tag exists. Gate: a Critical vulnerability
+  # with an available fix that is not covered by vex/gdal-oci.openvex.json fails the job, so merge does not run.
+  # Everything else (High, unfixed Debian CVEs) only goes to code scanning.
+  scan:
     needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-      # upload of the Docker Scout SARIF report to code scanning
+      # upload of the SARIF reports to code scanning
       security-events: write
     steps:
     - name: Checkout
-      uses: actions/checkout@v4
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
+
+    - name: Download digests
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: digests-${{ matrix.arch }}
+        path: ${{ runner.temp }}/digests
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+    # Docker Scout requires a Docker Hub login
+    - name: Login to Docker Hub
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # Docker Scout ignores the components built from source (GDAL, Arrow, Thrift, ...): they only have
+    # generic purls. Grype matches them by CPE, but scanning the image directly skips the CycloneDX files
+    # in /opt/geosgb/share/sbom; the BuildKit SBOM attestation already includes them, so Grype scans it
+    - name: Get the SBOM attestation of the release image
+      id: sbom
+      working-directory: ${{ runner.temp }}/digests/release
+      run: |
+        ref="${IMAGE}@sha256:$(ls)"
+        echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+        # single-platform image: {"SPDX": ...}; keyed by platform otherwise
+        docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' \
+          | jq -e 'if has("SPDX") then .SPDX else (to_entries[0].value.SPDX) end' > "${GITHUB_WORKSPACE}/release.spdx.json"
+        grep -q '"name": *"thrift"' "${GITHUB_WORKSPACE}/release.spdx.json"
+
+    - name: Analyze with Docker Scout
+      uses: docker/scout-action@a4119c5a8c5076236a54e4ce99531f7e4dd2ef84 # v1.27.0
+      with:
+        command: cves
+        image: ${{ steps.sbom.outputs.ref }}
+        platform: linux/${{ matrix.arch }}
+        sarif-file: scout.sarif
+        summary: true
+
+    - name: Upload Docker Scout SARIF result
+      uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+      with:
+        sarif_file: scout.sarif
+        category: docker-scout-${{ matrix.arch }}
+
+    # full report (all severities, fixed or not) for code scanning
+    - name: Analyze with Grype
+      id: grype
+      uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+      with:
+        sbom: release.spdx.json
+        vex: vex/gdal-oci.openvex.json
+        fail-build: false
+        output-format: sarif
+
+    - name: Upload Grype SARIF result
+      uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+      with:
+        sarif_file: ${{ steps.grype.outputs.sarif }}
+        category: grype-${{ matrix.arch }}
+
+    # the gate itself, after the reports are uploaded so they are visible even when it fails
+    - name: Fail on fixable critical vulnerabilities
+      uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+      with:
+        sbom: release.spdx.json
+        vex: vex/gdal-oci.openvex.json
+        only-fixed: true
+        severity-cutoff: critical
+        fail-build: true
+        output-format: table
+
+  # Creates the multi-platform tags: <GDAL_VERSION>-py<PYTHON_VERSION>[-devel] (moving, always the latest
+  # build) and <...>-<YYYYMMDD>[-devel] (one per build, never overwritten)
+  merge:
+    needs: [build, scan]
+    runs-on: ubuntu-24.04
+    steps:
+    - name: Checkout
+      uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      with:
+        persist-credentials: false
 
     # tag policy: <GDAL_VERSION>-py<PYTHON_VERSION>[-devel], from the ARG defaults in the Dockerfile
     - name: Get image tags from the Dockerfile
@@ -126,17 +229,17 @@ jobs:
         echo "devel=${IMAGE}:${TAG}-devel" >> "$GITHUB_OUTPUT"
 
     - name: Download digests
-      uses: actions/download-artifact@v4
+      uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
       with:
         path: ${{ runner.temp }}/digests
         pattern: digests-*
         merge-multiple: true
 
     - name: Set up Docker Buildx
-      uses: docker/setup-buildx-action@v3
+      uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
     - name: Login to Docker Hub
-      uses: docker/login-action@v3
+      uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
         password: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -147,52 +250,24 @@ jobs:
         RELEASE_TAG: ${{ steps.meta.outputs.release }}
       working-directory: ${{ runner.temp }}/digests
       run: |
-        for variant in devel release; do
-          if [ "$variant" = devel ]; then tag=$DEVEL_TAG; else tag=$RELEASE_TAG; fi
-          # shellcheck disable=SC2046
-          docker buildx imagetools create -t "$tag" $(printf "${IMAGE}@sha256:%s " $(ls "$variant"))
-          docker buildx imagetools inspect "$tag"
+        # dated tag, never overwritten: a second build on the same day gets .2, .3, ...
+        STAMP=$(date -u +%Y%m%d)
+        suffix=$STAMP
+        n=1
+        while docker buildx imagetools inspect "${RELEASE_TAG}-${suffix}" > /dev/null 2>&1; do
+          n=$((n + 1))
+          suffix="${STAMP}.${n}"
         done
-
-    - name: Analyze for critical and high CVEs
-      id: docker-scout-cves
-      # if: ${{ github.event_name != 'pull_request_target' }}
-      uses: docker/scout-action@v1
-      with:
-        command: cves
-        image: ${{ steps.meta.outputs.release }}
-        sarif-file: sarif.output.json
-        summary: true
-
-    - name: Upload SARIF result
-      id: upload-sarif
-      # if: ${{ github.event_name != 'pull_request_target' }}
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: sarif.output.json
-        category: docker-scout
-
-    # Docker Scout ignores the components built from source (GDAL, Arrow, Thrift, ...): they only have
-    # generic purls. Grype matches them by CPE, but scanning the image directly skips the CycloneDX files
-    # in /opt/geosgb/share/sbom; the BuildKit SBOM attestation already includes them, so Grype scans it
-    - name: Get the SBOM attestation of the release image
-      env:
-        RELEASE_TAG: ${{ steps.meta.outputs.release }}
-      run: |
-        docker buildx imagetools inspect "$RELEASE_TAG" \
-          --format '{{ json (index .SBOM "linux/amd64").SPDX }}' > release.spdx.json
-        grep -q '"name": *"thrift"' release.spdx.json
-
-    - name: Analyze with Grype
-      id: grype
-      uses: anchore/scan-action@v7.4.2
-      with:
-        sbom: release.spdx.json
-        fail-build: false
-        output-format: sarif
-
-    - name: Upload Grype SARIF result
-      uses: github/codeql-action/upload-sarif@v3
-      with:
-        sarif_file: ${{ steps.grype.outputs.sarif }}
-        category: grype
+        for variant in devel release; do
+          if [ "$variant" = devel ]; then
+            tag=$DEVEL_TAG
+            dated="${RELEASE_TAG}-${suffix}-devel"
+          else
+            tag=$RELEASE_TAG
+            dated="${RELEASE_TAG}-${suffix}"
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create -t "$tag" -t "$dated" $(printf "${IMAGE}@sha256:%s " $(ls "$variant"))
+          docker buildx imagetools inspect "$dated"
+        done
+        echo "Tags datadas: \`${RELEASE_TAG}-${suffix}\` e \`${RELEASE_TAG}-${suffix}-devel\`" >> "$GITHUB_STEP_SUMMARY"

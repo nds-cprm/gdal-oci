@@ -26,10 +26,14 @@ As imagens são publicadas em `docker.io/ndscprm/gdal`. A tag é formada pela **
 |---|---|---|
 | `release` | `<gdal>-py<python>` | `docker.io/ndscprm/gdal:3.12.4-py3.12` |
 | `devel` | `<gdal>-py<python>-devel` | `docker.io/ndscprm/gdal:3.12.4-py3.12-devel` |
+| `release` (build específico) | `<gdal>-py<python>-<AAAAMMDD>` | `docker.io/ndscprm/gdal:3.12.4-py3.12-20261026` |
+| `devel` (build específico) | `<gdal>-py<python>-<AAAAMMDD>-devel` | `docker.io/ndscprm/gdal:3.12.4-py3.12-20261026-devel` |
 
 - `<gdal>` é a versão completa do GDAL (`GDAL_VERSION`, ex.: `3.12.4`), e `<python>` é a versão `major.minor` do Python (`PYTHON_VERSION`, ex.: `3.12`).
 - As duas tags de uma mesma versão são **sempre geradas e publicadas juntas, a partir do mesmo build**. Elas são feitas para serem usadas em conjunto (veja [Padrão recomendado](#padrão-recomendado-compilar-no-devel-rodar-no-release)).
-- As outras versões incluídas na imagem (Debian, Arrow, Oracle Instant Client, numpy) não entram na tag. Para fixar exatamente um build, referencie a imagem pelo digest (`docker.io/ndscprm/gdal:3.12.4-py3.12@sha256:…`).
+- As imagens são **refeitas toda semana** para incorporar as correções de segurança do Debian e do Python. As tags `<gdal>-py<python>[-devel]` são móveis e sempre apontam para o build mais recente. As tags com data (`-<AAAAMMDD>`, em UTC) identificam um build e nunca são sobrescritas; um segundo build no mesmo dia recebe `.2`, `.3`, ... Para fixar exatamente um build, use a tag com data ou o digest (`docker.io/ndscprm/gdal:3.12.4-py3.12@sha256:…`).
+- As outras versões incluídas na imagem (Debian, Arrow, Oracle Instant Client, numpy) não entram na tag.
+- Nenhuma tag é publicada se o build tiver vulnerabilidade **crítica com correção disponível** (verificação no CI com o Grype). Os CVEs que não se aplicam a esta imagem, por exemplo de drivers do GDAL que não são compilados, estão declarados em [vex/gdal-oci.openvex.json](vex/gdal-oci.openvex.json) (OpenVEX).
 
 ## O que vem incluído
 
@@ -263,7 +267,7 @@ Todos os downloads são verificados contra valores fixados no Dockerfile (SHA256
 
 O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do repositório apt do Arrow, para que o Parquet use uma versão do Apache Thrift com as correções de segurança em dia. O Thrift do Debian trixie (0.19) tem CVEs abertos e sem previsão de correção. O Thrift fica embutido no `libparquet.so` (link estático), então não aparece como pacote na imagem.
 
-**SBOM.** As imagens publicadas têm attestations de SBOM (SPDX) e de provenance. Para ver: `docker buildx imagetools inspect docker.io/ndscprm/gdal:3.12.4-py3.12 --format '{{ json .SBOM }}'`. Os componentes que não vêm do apt (GDAL, Arrow, Thrift, xsimd, simdjson, Oracle Instant Client) também ficam descritos em CycloneDX em `/opt/geosgb/share/sbom/`, dentro da imagem. Assim o Grype os encontra mesmo quando a imagem é analisada sem as attestations.
+**SBOM.** As imagens publicadas têm attestations de SBOM (SPDX) e de provenance. Para ver: `docker buildx imagetools inspect docker.io/ndscprm/gdal:3.12.4-py3.12 --format '{{ json .SBOM }}'`. Os componentes que não vêm do apt (GDAL, Arrow, Thrift, xsimd, simdjson, Oracle Instant Client) também ficam descritos em CycloneDX em `/opt/geosgb/share/sbom/`, dentro da imagem. Para analisar a imagem com o Grype, use a attestation (`grype sbom:<arquivo SPDX>`). Analisando a imagem direto, o Grype não lê esses arquivos. Outra opção é gerar o SBOM com `syft <imagem> --select-catalogers +sbom-cataloger -o spdx-json` e passá-lo ao Grype.
 
 ## Licença
 
