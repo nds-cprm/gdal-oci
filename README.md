@@ -38,7 +38,7 @@ Tudo fica em `/opt/geosgb`:
 | Caminho | Conteúdo |
 |---|---|
 | `/opt/geosgb/bin` | Utilitários do GDAL (`gdalinfo`, `ogr2ogr`, `gdal_translate`, …) |
-| `/opt/geosgb/lib` | `libgdal.so` |
+| `/opt/geosgb/lib` | `libgdal.so` e as bibliotecas do Apache Arrow/Parquet (`libarrow*.so`, `libparquet.so`) |
 | `/opt/geosgb/share/gdal` | Dados do GDAL (`GDAL_DATA`) |
 | `/opt/geosgb/venv` | Virtualenv Python com os bindings `osgeo` e numpy |
 | `/opt/geosgb/oracle` | Oracle Instant Client 19.32 (basiclite; o SDK fica só no `devel`) |
@@ -253,11 +253,17 @@ Para analisar um core dump gerado no `release`, abra-o no `devel` da mesma vers�
 | `PYTHON_VERSION` | `3.12` |
 | `DEBIAN_VERSION` | `trixie` |
 | `GDAL_VERSION` / `GDAL_SHA256` | `3.12.4` / SHA256 do tarball |
-| `APACHE_ARROW_VERSION` | `26.0` |
+| `ARROW_VERSION` / `ARROW_SHA256` | `26.0.0` / SHA256 do tarball |
+| `THRIFT_VERSION` / `THRIFT_SHA256` | `0.25.0` / SHA256 do tarball |
+| `HARDENING_CFLAGS` / `HARDENING_LDFLAGS` | stack protector, `_FORTIFY_SOURCE=3`, stack clash protection e RELRO completo (GDAL, Arrow e Thrift) |
 | `NUMPY_VERSION` | `2.5.4` (versão usada para compilar os bindings) |
 | Oracle Instant Client | `19.32.0.0.0` |
 
-Todos os downloads são verificados contra valores fixados no Dockerfile: SHA256 do GDAL e do Oracle, fingerprint GPG do repositório do Arrow. Para mudar a versão do GDAL, é preciso atualizar também o `GDAL_SHA256`. O procedimento está no [CLAUDE.md](CLAUDE.md).
+Todos os downloads são verificados contra valores fixados no Dockerfile (SHA256 do GDAL, do Arrow, do Thrift e do Oracle). Para mudar a versão de um deles, é preciso atualizar também o SHA256 correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md).
+
+O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do repositório apt do Arrow, para que o Parquet use uma versão do Apache Thrift com as correções de segurança em dia. O Thrift do Debian trixie (0.19) tem CVEs abertos e sem previsão de correção. O Thrift fica embutido no `libparquet.so` (link estático), então não aparece como pacote na imagem.
+
+**SBOM.** As imagens publicadas têm attestations de SBOM (SPDX) e de provenance. Para ver: `docker buildx imagetools inspect docker.io/ndscprm/gdal:3.12.4-py3.12 --format '{{ json .SBOM }}'`. Os componentes que não vêm do apt (GDAL, Arrow, Thrift, xsimd, simdjson, Oracle Instant Client) também ficam descritos em CycloneDX em `/opt/geosgb/share/sbom/`, dentro da imagem. Assim o Grype os encontra mesmo quando a imagem é analisada sem as attestations.
 
 ## Licença
 

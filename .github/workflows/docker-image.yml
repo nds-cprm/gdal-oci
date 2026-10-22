@@ -52,6 +52,10 @@ jobs:
         outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
         target: devel
         cache-from: type=gha,scope=${{ matrix.arch }}
+        # SBOM (Debian/Python packages + the CycloneDX files in /opt/geosgb/share/sbom) and provenance
+        # attestations, kept by imagetools create in the multi-platform tags
+        sbom: true
+        provenance: mode=max
 
     # the release build goes through devel and staging, so its mode=max cache covers every stage
     # (a cache-to on the devel step would only duplicate it in the 10 GB GHA cache)
@@ -68,6 +72,8 @@ jobs:
         target: release
         cache-from: type=gha,scope=${{ matrix.arch }}
         cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+        sbom: true
+        provenance: mode=max
 
     # runs on the native runner of each architecture; a failure here stops the merge job,
     # so no tag is created for a broken image
@@ -164,3 +170,29 @@ jobs:
       uses: github/codeql-action/upload-sarif@v3
       with:
         sarif_file: sarif.output.json
+        category: docker-scout
+
+    # Docker Scout ignores the components built from source (GDAL, Arrow, Thrift, ...): they only have
+    # generic purls. Grype matches them by CPE, but scanning the image directly skips the CycloneDX files
+    # in /opt/geosgb/share/sbom; the BuildKit SBOM attestation already includes them, so Grype scans it
+    - name: Get the SBOM attestation of the release image
+      env:
+        RELEASE_TAG: ${{ steps.meta.outputs.release }}
+      run: |
+        docker buildx imagetools inspect "$RELEASE_TAG" \
+          --format '{{ json (index .SBOM "linux/amd64").SPDX }}' > release.spdx.json
+        grep -q '"name": *"thrift"' release.spdx.json
+
+    - name: Analyze with Grype
+      id: grype
+      uses: anchore/scan-action@v7.4.2
+      with:
+        sbom: release.spdx.json
+        fail-build: false
+        output-format: sarif
+
+    - name: Upload Grype SARIF result
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: ${{ steps.grype.outputs.sarif }}
+        category: grype

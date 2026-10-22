@@ -47,6 +47,41 @@ run sh -c '
     for f in v.gpkg v.kmz v.parquet; do ogrinfo -ro -so -al "$f" | grep -q "Feature Count: 1"; done'
 echo "## escrita e leitura ok"
 
+echo "## Parquet: codecs e Thrift embutido"
+run sh -c '
+    set -e; cd /tmp
+    echo "{\"type\":\"Feature\",\"properties\":{\"n\":1},\"geometry\":{\"type\":\"Point\",\"coordinates\":[-45,-5]}}" > p.geojson
+    for c in SNAPPY GZIP BROTLI ZSTD LZ4_RAW; do
+        ogr2ogr -f Parquet -lco COMPRESSION=$c "v_$c.parquet" p.geojson
+        ogrinfo -ro -so -al "v_$c.parquet" | grep -q "Feature Count: 1"
+    done
+    # Arrow/Parquet compilados na imagem com Thrift estático: nenhum libthrift do Debian
+    ! dpkg-query -W -f "\${Status}\n" "libthrift*" 2> /dev/null | grep -q "ok installed"'
+echo "## Parquet ok"
+
+echo "## proteções de compilação (HARDENING_CFLAGS/LDFLAGS)"
+# só no devel, que tem readelf; os binários do release são os mesmos, sem os símbolos de debug
+run sh -c '
+    command -v readelf > /dev/null || { echo "readelf ausente, pulando"; exit 0; }
+    for f in /opt/geosgb/lib/libgdal.so /opt/geosgb/lib/libarrow.so /opt/geosgb/lib/libparquet.so /opt/geosgb/bin/gdalinfo \
+             /opt/geosgb/venv/lib/python*/site-packages/osgeo/_gdal.*.so; do
+        readelf -dW "$f" | grep -q BIND_NOW || { echo "sem RELRO completo: $f" >&2; exit 1; }
+        readelf -sW --dyn-syms "$f" | grep -q __stack_chk_fail || { echo "sem stack protector: $f" >&2; exit 1; }
+        readelf -sW --dyn-syms "$f" | grep -q "_chk@" || { echo "sem _FORTIFY_SOURCE: $f" >&2; exit 1; }
+    done
+    echo "ok"'
+
+echo "## SBOM dos componentes fora do apt (/opt/geosgb/share/sbom)"
+run python -c '
+import glob, json
+from osgeo import gdal
+comps = {c["name"]: c["version"] for f in glob.glob("/opt/geosgb/share/sbom/*.cdx.json") for c in json.load(open(f))["components"]}
+missing = {"gdal", "arrow", "thrift", "xsimd", "simdjson", "oracle-instantclient"} - comps.keys()
+assert not missing, missing
+assert comps["gdal"] == gdal.__version__, comps["gdal"]
+print(", ".join(f"{n} {v}" for n, v in sorted(comps.items())))'
+echo "## SBOM ok"
+
 echo "## UID arbitrário (nss_wrapper)"
 docker run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" \
     sh -c 'test "$(whoami)" = sgb && test "$HOME" = /tmp && test -w "$HOME"'
