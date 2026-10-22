@@ -1,0 +1,166 @@
+name: Docker Image CI
+
+on:
+  workflow_dispatch:
+  #push:
+  #  branches: [ "main" ]
+  #pull_request:
+  #  branches: [ "main" ]
+  #schedule:
+  #- cron: "0 2 * * 1-5"
+
+env:
+  IMAGE: docker.io/ndscprm/gdal
+
+jobs:
+  # One job per architecture on native runners. Images are pushed by digest only (no tag);
+  # the merge job assembles the multi-platform tags from those digests.
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+        - arch: amd64
+          runner: ubuntu-24.04
+        - arch: arm64
+          runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # devel first (toolchain, headers, GDAL sources and debug symbols, ~30 min to compile GDAL);
+    # release reuses the devel stage from the same builder, so both come from the same GDAL build
+    - name: Build and push devel image
+      id: devel
+      uses: docker/build-push-action@v5.3.0
+      with:
+        context: .
+        file: Dockerfile
+        platforms: linux/${{ matrix.arch }}
+        # Always attempt to pull all referenced images
+        pull: true
+        outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+        target: devel
+        cache-from: type=gha,scope=${{ matrix.arch }}
+
+    # the release build goes through devel and staging, so its mode=max cache covers every stage
+    # (a cache-to on the devel step would only duplicate it in the 10 GB GHA cache)
+    - name: Build and push release image
+      id: release
+      uses: docker/build-push-action@v5.3.0
+      with:
+        context: .
+        file: Dockerfile
+        platforms: linux/${{ matrix.arch }}
+        # Always attempt to pull all referenced images
+        pull: true
+        outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
+        target: release
+        cache-from: type=gha,scope=${{ matrix.arch }}
+        cache-to: type=gha,scope=${{ matrix.arch }},mode=max
+
+    # runs on the native runner of each architecture; a failure here stops the merge job,
+    # so no tag is created for a broken image
+    - name: Smoke test devel and release images
+      env:
+        DEVEL_DIGEST: ${{ steps.devel.outputs.digest }}
+        RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
+      run: |
+        sh .github/scripts/smoke-test.sh "${IMAGE}@${RELEASE_DIGEST}"
+        sh .github/scripts/smoke-test.sh "${IMAGE}@${DEVEL_DIGEST}"
+
+    - name: Export digests
+      env:
+        DEVEL_DIGEST: ${{ steps.devel.outputs.digest }}
+        RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
+      run: |
+        mkdir -p "${{ runner.temp }}/digests/devel" "${{ runner.temp }}/digests/release"
+        touch "${{ runner.temp }}/digests/devel/${DEVEL_DIGEST#sha256:}"
+        touch "${{ runner.temp }}/digests/release/${RELEASE_DIGEST#sha256:}"
+
+    - name: Upload digests
+      uses: actions/upload-artifact@v4
+      with:
+        name: digests-${{ matrix.arch }}
+        path: ${{ runner.temp }}/digests/*
+        if-no-files-found: error
+        retention-days: 1
+
+  # Creates the multi-platform tags (<GDAL_VERSION>-py<PYTHON_VERSION> and <...>-devel) and scans the release
+  merge:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # upload of the Docker Scout SARIF report to code scanning
+      security-events: write
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    # tag policy: <GDAL_VERSION>-py<PYTHON_VERSION>[-devel], from the ARG defaults in the Dockerfile
+    - name: Get image tags from the Dockerfile
+      id: meta
+      run: |
+        GDAL_VERSION=$(sed -n 's/^ARG GDAL_VERSION=//p' Dockerfile)
+        PYTHON_VERSION=$(sed -n 's/^ARG PYTHON_VERSION=//p' Dockerfile)
+        test -n "$GDAL_VERSION" && test -n "$PYTHON_VERSION"
+        TAG="${GDAL_VERSION}-py${PYTHON_VERSION}"
+        echo "release=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+        echo "devel=${IMAGE}:${TAG}-devel" >> "$GITHUB_OUTPUT"
+
+    - name: Download digests
+      uses: actions/download-artifact@v4
+      with:
+        path: ${{ runner.temp }}/digests
+        pattern: digests-*
+        merge-multiple: true
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Create multi-platform tags
+      env:
+        DEVEL_TAG: ${{ steps.meta.outputs.devel }}
+        RELEASE_TAG: ${{ steps.meta.outputs.release }}
+      working-directory: ${{ runner.temp }}/digests
+      run: |
+        for variant in devel release; do
+          if [ "$variant" = devel ]; then tag=$DEVEL_TAG; else tag=$RELEASE_TAG; fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create -t "$tag" $(printf "${IMAGE}@sha256:%s " $(ls "$variant"))
+          docker buildx imagetools inspect "$tag"
+        done
+
+    - name: Analyze for critical and high CVEs
+      id: docker-scout-cves
+      # if: ${{ github.event_name != 'pull_request_target' }}
+      uses: docker/scout-action@v1
+      with:
+        command: cves
+        image: ${{ steps.meta.outputs.release }}
+        sarif-file: sarif.output.json
+        summary: true
+
+    - name: Upload SARIF result
+      id: upload-sarif
+      # if: ${{ github.event_name != 'pull_request_target' }}
+      uses: github/codeql-action/upload-sarif@v3
+      with:
+        sarif_file: sarif.output.json
