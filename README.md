@@ -10,7 +10,7 @@ O mesmo [Dockerfile](Dockerfile) gera duas imagens:
 |---|---|---|
 | **Para quê** | Base de imagens de aplicação (produção) | Compilar código contra o GDAL e depurar |
 | **Base** | `python:3.12-slim-trixie` | `python:3.12-trixie` |
-| **Tamanho** | ~630 MB | ~2,7 GB |
+| **Tamanho** | ~580 MB | ~2,4 GB |
 | **GDAL** | Binários e bibliotecas, sem símbolos de debug | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` |
 | **Ferramentas** | Só o runtime | `build-essential`, `cmake`, `swig`, `gdb` e os pacotes `-dev` de todas as dependências |
 | **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `release` |
@@ -90,7 +90,9 @@ docker push ${IMAGE}:${TAG}
 
 Ao mudar o `GDAL_VERSION`, passe também o `GDAL_SHA256` correspondente (veja [Versões e build args](#versões-e-build-args)). Os valores padrão do Dockerfile correspondem ao GDAL 3.12.4 com Python 3.12.
 
-A compilação do GDAL leva cerca de 30 minutos. Só foi testado em `linux/amd64`. O Dockerfile também aceita `linux/arm64` (o Oracle Instant Client tem as duas arquiteturas), mas esse build ainda não foi validado.
+O build compila o Apache Arrow e o GDAL e leva de 15 a 25 minutos, conforme o número de núcleos da máquina. As arquiteturas suportadas são `linux/amd64` e `linux/arm64` (o Oracle Instant Client tem as duas), e o CI faz o build e o smoke test de ambas.
+
+Os comandos acima servem para testes locais. As imagens publicadas devem sair do [CI](.github/workflows/docker-image.yml): um `docker push` manual gera uma imagem sem attestations de SBOM e provenance, que não passou pelo smoke test nem pela verificação de vulnerabilidades e não tem tag datada.
 
 ## Usando o `release` como base
 
