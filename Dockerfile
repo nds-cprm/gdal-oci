@@ -321,6 +321,9 @@ RUN --mount=type=bind,source=requirements/pyarrow-build.txt,target=/tmp/pyarrow-
     rm arrow.tar.gz && \
     /usr/local/bin/python3 -m venv /tmp/pyarrow-build && \
     /tmp/pyarrow-build/bin/pip install --no-cache-dir --require-hashes -r /tmp/pyarrow-build.txt && \
+    # the wheel must be built with the numpy of the image venv (pyarrow-build.txt and gdal-build.txt out of sync)
+    NUMPY_VERSION_CHECK='import numpy; print(numpy.__version__)' && \
+    test "$(/tmp/pyarrow-build/bin/python -c "$NUMPY_VERSION_CHECK")" = "$(${BASE_DIR}/venv/bin/python -c "$NUMPY_VERSION_CHECK")" && \
     CMAKE_PREFIX_PATH=${BASE_DIR} CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
     CFLAGS="${HARDENING_CFLAGS}" CXXFLAGS="${HARDENING_CFLAGS}" LDFLAGS="${HARDENING_LDFLAGS}" \
         /tmp/pyarrow-build/bin/pip wheel --no-cache-dir --no-build-isolation --no-deps -w /tmp/pyarrow-wheel ./arrow/python && \
