@@ -103,6 +103,17 @@ echo "## SBOM ok"
 echo "## UID arbitrário (nss_wrapper)"
 docker run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" \
     sh -c 'test "$(whoami)" = sgb && test "$HOME" = /tmp && test -w "$HOME"'
+# passwd/group virtuais num diretório exclusivo (mktemp, 0700), nunca num caminho fixo do /tmp
+docker run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" sh -c '
+    case "$NSS_WRAPPER_PASSWD" in /tmp/nss_wrapper.*/passwd) ;; *) exit 1 ;; esac
+    test "$(stat -c %a "${NSS_WRAPPER_PASSWD%/passwd}")" = 700'
+# USER_NAME personalizado; nome inválido (":" injetaria campos no passwd) impede o start
+docker run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 -e USER_NAME=app.user "$IMAGE" \
+    sh -c 'test "$(whoami)" = app.user'
+if docker run --rm --user 12345:0 -e USER_NAME='x:x:0:0::/:/bin/sh' "$IMAGE" true 2>/dev/null; then
+    echo "USER_NAME inválido foi aceito" >&2
+    exit 1
+fi
 # stdout do comando não pode ter saída do entrypoint
 out=$(docker run --rm --user 12345:0 "$IMAGE" sh -c 'echo ok' 2>/dev/null)
 test "$out" = ok

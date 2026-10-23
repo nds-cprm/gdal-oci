@@ -30,12 +30,6 @@ A `python:slim` traz 11 binários setuid/setgid (`su`, `mount`, `umount`, `passw
 - Remover os bits no `release`: `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`.
 - Alternativa ou complemento: recomendar `--security-opt no-new-privileges` no README.
 
-### nss_wrapper
-Em [10-enable-nss-wrapper.sh](docker-entrypoint.d/10-enable-nss-wrapper.sh):
-
-- `cat > /tmp/passwd` segue symlinks. Se `/tmp` for um volume compartilhado entre containers (ex.: `emptyDir` num pod), outro container pode plantar o arquivo. Usar um diretório criado com `mktemp -d`.
-- `USER_NAME` não é validado: `:` ou quebra de linha injetam linhas no passwd virtual. O efeito fica restrito à resolução de nomes, sem ganho de privilégio, mas vale validar (ex.: `case` com `[a-z_][a-z0-9_-]*`).
-
 ### Imagem `devel` fora do scan
 O job `scan` verifica só o `release`. O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.
 
