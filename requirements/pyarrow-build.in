@@ -1,0 +1,12 @@
+# Build-only dependencies of pyarrow (requires of python/pyproject.toml in the Arrow source tarball), installed
+# in a temporary venv that builds the pyarrow wheel; none of them stays in the image.
+# pyarrow-build.txt is generated from this file, with the hashes of every file of each version on PyPI:
+#   docker run --rm -v "$PWD/requirements:/r" -w /r python:3.12-slim sh -c \
+#     "pip install -q pip-tools && pip-compile -q --generate-hashes --allow-unsafe --strip-extras -o pyarrow-build.txt pyarrow-build.in"
+# numpy comes from the constraint below, so the wheel is built with the numpy of the image venv
+-c gdal-build.in
+cython==3.3.0
+libcst==1.9.0
+numpy==2.5.4
+scikit-build-core==1.1.1
+setuptools-scm==10.3.4

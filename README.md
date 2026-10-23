@@ -2,7 +2,7 @@
 
 > Documentação gerada por IA (Claude) e revisada por humanos 
 
-Imagens Docker base com **GDAL 3.12.4 compilado do código-fonte**, bindings Python, Apache Arrow/Parquet e **Oracle Instant Client**, para servir de base a imagens de aplicações Python geoespaciais.
+Imagens Docker base com **GDAL 3.12.4 compilado do código-fonte**, bindings Python, Apache Arrow/Parquet (com **pyarrow** compilado contra as mesmas bibliotecas) e **Oracle Instant Client**, para servir de base a imagens de aplicações Python geoespaciais.
 
 O mesmo [Dockerfile](Dockerfile) gera três imagens:
 
@@ -10,9 +10,9 @@ O mesmo [Dockerfile](Dockerfile) gera três imagens:
 |---|---|---|---|
 | **Para quê** | Compilar código contra o GDAL e depurar | Base de imagens de aplicação (produção) | Utilitários do GDAL e aplicações C/C++, sem Python |
 | **Base** | `python:3.12-trixie` | `python:3.12-slim-trixie` | `debian:trixie-slim` |
-| **Tamanho** | ~2,4 GB | ~580 MB | ~450 MB |
+| **Tamanho** | ~2,4 GB | ~620 MB | ~450 MB |
 | **GDAL** | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` | Binários e bibliotecas, sem símbolos de debug | Igual ao `release-py` |
-| **Python** | Virtualenv com os bindings `osgeo` e numpy | Igual ao `devel` | Não tem (nem os utilitários em Python, como `gdal_calc.py`) |
+| **Python** | Virtualenv com os bindings `osgeo`, numpy e pyarrow | Igual ao `devel` | Não tem (nem os utilitários em Python, como `gdal_calc.py`) |
 | **Ferramentas** | `build-essential`, `cmake`, `swig`, `gdb` e os pacotes `-dev` de todas as dependências | Só o runtime | Só o runtime |
 | **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `devel` | Igual ao `devel` |
 | **CMD** | `python3` | `python3` | `bash` |
@@ -48,7 +48,7 @@ Tudo fica em `/opt/geosgb`:
 | `/opt/geosgb/bin` | Utilitários do GDAL (`gdalinfo`, `ogr2ogr`, `gdal_translate`, …) |
 | `/opt/geosgb/lib` | `libgdal.so` e as bibliotecas do Apache Arrow/Parquet (`libarrow*.so`, `libparquet.so`) |
 | `/opt/geosgb/share/gdal` | Dados do GDAL (`GDAL_DATA`) |
-| `/opt/geosgb/venv` | Virtualenv Python com os bindings `osgeo` e numpy (não existe no `release-nopy`) |
+| `/opt/geosgb/venv` | Virtualenv Python com os bindings `osgeo`, numpy e pyarrow (não existe no `release-nopy`) |
 | `/opt/geosgb/oracle` | Oracle Instant Client 19.32 (basiclite; o SDK fica só no `devel`) |
 | `/opt/geosgb/include`, `lib/cmake`, `lib/pkgconfig`, `src` | Só no `devel` |
 
@@ -127,7 +127,33 @@ Regras:
 
 - **Não instale o pacote `GDAL` do PyPI** (`pip install gdal`). Ele substituiria os bindings da imagem, que foram compilados com os drivers acima.
 - **numpy:** os bindings foram compilados com numpy 2.x e funcionam com qualquer numpy **a partir da 1.25**. Pode fazer upgrade ou downgrade do numpy livremente dentro dessa faixa.
+- **pyarrow:** o venv já vem com o pyarrow 26.0.0, compilado contra o mesmo Arrow C++ que o GDAL usa (`/opt/geosgb/lib`). **Não instale o `pyarrow` do PyPI**: a wheel traz um Arrow C++ próprio, e o container ficaria com duas cópias do Arrow. Um pacote que dependa do pyarrow mantém o da imagem quando a versão exigida é compatível. Se ele exigir outra versão (ex.: `pyarrow<26`), o pip troca o pyarrow da imagem pela wheel do PyPI sem avisar. Para o pip falhar nesse caso, em vez de trocar, use um arquivo de constraints (veja o exemplo abaixo).
 - **Bibliotecas Python que dependem do GDAL** (ex.: `fiona`, `rasterio`): as wheels do PyPI trazem uma cópia própria do GDAL, com versão e drivers diferentes dos desta imagem, e assim ficam duas cópias do GDAL no container. Para que elas usem o GDAL da imagem, compile a partir do código-fonte no `devel` (veja [examples/fiona](examples/fiona/)). Essas bibliotecas também podem ter uma lista própria de drivers liberados, que não inclui todos os do GDAL.
+
+### pyarrow
+
+O GDAL e o pyarrow usam as mesmas bibliotecas do Arrow, então os dados passam de um para o outro pela interface C do Arrow (ArrowStream), sem conversão por feição:
+
+```python
+import pyarrow as pa
+import pyarrow.parquet as pq
+from osgeo import ogr
+ogr.UseExceptions()
+
+ds = ogr.Open("dados.gpkg")
+# o Layer implementa a PyCapsule interface do Arrow (__arrow_c_stream__)
+table = pa.table(ds.GetLayer(0))
+pq.write_table(table, "dados.parquet", compression="zstd")
+```
+
+Para instalar dependências sem deixar o pip trocar o pyarrow da imagem:
+
+```dockerfile
+RUN echo "pyarrow==26.0.0" > /tmp/constraints.txt && \
+    pip install --no-cache-dir -c /tmp/constraints.txt -r requirements.txt
+```
+
+Com a constraint, um pacote que exija outra versão do pyarrow faz o `pip install` falhar no build, em vez de instalar a wheel do PyPI.
 
 ### Exemplos
 
@@ -358,15 +384,16 @@ Para analisar um core dump gerado no `release-py`, abra-o no `devel` da mesma ve
 | `GDAL_VERSION` / `GDAL_SHA256` | `3.12.4` / SHA256 do tarball |
 | `ARROW_VERSION` / `ARROW_SHA256` | `26.0.0` / SHA256 do tarball |
 | `THRIFT_VERSION` / `THRIFT_SHA256` | `0.25.0` / SHA256 do tarball |
-| `HARDENING_CFLAGS` / `HARDENING_LDFLAGS` | stack protector, `_FORTIFY_SOURCE=3`, stack clash protection e RELRO completo (GDAL, Arrow e Thrift) |
-| numpy | `2.5.4` (versão usada para compilar os bindings; fixada com hash em [requirements/venv.txt](requirements/venv.txt), junto com pip, setuptools e wheel) |
+| `HARDENING_CFLAGS` / `HARDENING_LDFLAGS` | stack protector, `_FORTIFY_SOURCE=3`, stack clash protection e RELRO completo (GDAL, Arrow, Thrift e pyarrow) |
+| numpy | `2.5.4` (versão usada para compilar os bindings; fixada com hash em [requirements/gdal-build.txt](requirements/gdal-build.txt), junto com pip, setuptools e wheel) |
+| pyarrow | igual ao `ARROW_VERSION` (`26.0.0`), compilado do mesmo tarball do Arrow; as dependências de build ficam fixadas com hash em [requirements/pyarrow-build.txt](requirements/pyarrow-build.txt) e não entram na imagem |
 | Oracle Instant Client | `19.32.0.0.0` |
 
-Todos os downloads são verificados contra valores fixados no repositório: o SHA256 do GDAL, do Arrow, do Thrift e do Oracle no Dockerfile, e os hashes dos pacotes Python do venv em [requirements/venv.txt](requirements/venv.txt) (`pip install --require-hashes`). Para mudar a versão de um deles, é preciso atualizar também o hash correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md). As imagens base (`python` e, no `release-nopy`, `debian`) são referenciadas por tag, para que o rebuild semanal pegue as correções delas. O digest exato usado em cada build fica registrado no provenance.
+Todos os downloads são verificados contra valores fixados no repositório: o SHA256 do GDAL, do Arrow, do Thrift e do Oracle no Dockerfile, e os hashes dos pacotes Python do venv e do build do pyarrow em [requirements/gdal-build.txt](requirements/gdal-build.txt) e [requirements/pyarrow-build.txt](requirements/pyarrow-build.txt) (`pip install --require-hashes`). Para mudar a versão de um deles, é preciso atualizar também o hash correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md). As imagens base (`python` e, no `release-nopy`, `debian`) são referenciadas por tag, para que o rebuild semanal pegue as correções delas. O digest exato usado em cada build fica registrado no provenance.
 
-O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do repositório apt do Arrow, para que o Parquet use uma versão do Apache Thrift com as correções de segurança em dia. O Thrift do Debian trixie (0.19) tem CVEs abertos e sem previsão de correção. O Thrift fica embutido no `libparquet.so` (link estático), então não aparece como pacote na imagem.
+O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do repositório apt do Arrow, para que o Parquet use uma versão do Apache Thrift com as correções de segurança em dia. O Thrift do Debian trixie (0.19) tem CVEs abertos e sem previsão de correção. O Thrift fica embutido no `libparquet.so` (link estático), então não aparece como pacote na imagem. O pyarrow é compilado do mesmo código-fonte, porque a wheel do PyPI traz um Arrow C++ próprio, e assim ficariam duas cópias do Arrow no container.
 
-**SBOM.** As imagens publicadas têm attestations de SBOM (SPDX) e de provenance. Para ver: `docker buildx imagetools inspect docker.io/ndscprm/gdal:3.12.4-py3.12 --format '{{ json .SBOM }}'`. Os componentes que não vêm do apt (GDAL, Arrow, Thrift, xsimd, simdjson, Oracle Instant Client) também ficam descritos em CycloneDX em `/opt/geosgb/share/sbom/`, dentro da imagem. Para analisar a imagem com o Grype, use a attestation (`grype sbom:<arquivo SPDX>`). Analisando a imagem direto, o Grype não lê esses arquivos. Outra opção é gerar o SBOM com `syft <imagem> --select-catalogers +sbom-cataloger -o spdx-json` e passá-lo ao Grype.
+**SBOM.** As imagens publicadas têm attestations de SBOM (SPDX) e de provenance. Para ver: `docker buildx imagetools inspect docker.io/ndscprm/gdal:3.12.4-py3.12 --format '{{ json .SBOM }}'`. Os componentes que não vêm do apt (GDAL, Arrow, Thrift, xsimd, simdjson, Oracle Instant Client) e o RapidJSON, que vem do apt mas fica compilado dentro do `libarrow.so`, também ficam descritos em CycloneDX em `/opt/geosgb/share/sbom/`, dentro da imagem. Para analisar a imagem com o Grype, use a attestation (`grype sbom:<arquivo SPDX>`). Analisando a imagem direto, o Grype não lê esses arquivos. Outra opção é gerar o SBOM com `syft <imagem> --select-catalogers +sbom-cataloger -o spdx-json` e passá-lo ao Grype.
 
 ## Licença
 

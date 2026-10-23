@@ -76,7 +76,8 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
 RUN apt-get -y update && \
     apt-get install -y --no-install-recommends --no-install-suggests \
         swig \
-        # Arrow/Parquet build: Boost headers (Thrift), compression codecs, re2/utf8proc (compute)
+        # Arrow/Parquet build: Boost headers (Thrift), compression codecs, re2/utf8proc (compute),
+        # RapidJSON (header-only, JSON reader required by pyarrow)
         libboost-dev \
         libbrotli-dev \
         libbz2-dev \
@@ -85,6 +86,7 @@ RUN apt-get -y update && \
         libsnappy-dev \
         libutf8proc-dev \
         libzstd-dev \
+        rapidjson-dev \
         zlib1g-dev \
         libcurl4-openssl-dev \
         libexpat1-dev \
@@ -158,7 +160,8 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
         -DWITH_OPENSSL=OFF \
         -DWITH_ZLIB=OFF && \
     cmake --build thrift/build --parallel "$(nproc)" --target install && \
-    # Arrow: the modules used by the GDAL Arrow/Parquet drivers, codecs and re2/utf8proc from Debian;
+    # Arrow: the modules used by the GDAL Arrow/Parquet drivers plus CSV and JSON (required by pyarrow),
+    # codecs and re2/utf8proc/RapidJSON from Debian;
     # xsimd and simdjson are newer than Debian's, so Arrow fetches them (SHA256 from its versions.txt)
     cmake -S arrow/cpp -B arrow/build \
         -DCMAKE_BUILD_TYPE=Release \
@@ -176,6 +179,8 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
         -DARROW_THRIFT_USE_SHARED=OFF \
         -DARROW_COMPUTE=ON \
         -DARROW_ACERO=ON \
+        -DARROW_CSV=ON \
+        -DARROW_JSON=ON \
         -DARROW_DATASET=ON \
         -DARROW_FILESYSTEM=ON \
         -DARROW_IPC=ON \
@@ -191,24 +196,30 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
         -DARROW_JEMALLOC=OFF \
         -DARROW_MIMALLOC=OFF && \
     cmake --build arrow/build --parallel "$(nproc)" --target install && \
-    # SBOM: Thrift is static in libparquet; xsimd (headers) and simdjson (static) are bundled by Arrow
+    # SBOM: Thrift is static in libparquet; xsimd (headers) and simdjson (static) are bundled by Arrow;
+    # RapidJSON (headers) comes from Debian but is compiled into libarrow, so it is not a package of release-py
     XSIMD_VERSION=$(sed -n 's/^ARROW_XSIMD_BUILD_VERSION=//p' arrow/cpp/thirdparty/versions.txt) && \
     SIMDJSON_VERSION=$(sed -n 's/^ARROW_SIMDJSON_BUILD_VERSION=v\{0,1\}//p' arrow/cpp/thirdparty/versions.txt) && \
-    test -n "$XSIMD_VERSION" && test -n "$SIMDJSON_VERSION" && \
+    # (deb purl with the Debian version and source package, so scanners use the Debian security tracker)
+    RAPIDJSON_DEB_VERSION=$(dpkg-query -W -f '${Version}' rapidjson-dev) && \
+    RAPIDJSON_DEB_SOURCE=$(dpkg-query -W -f '${source:Package}' rapidjson-dev) && \
+    DEBIAN_VERSION_ID=$(. /etc/os-release && echo "$VERSION_ID") && \
+    test -n "$XSIMD_VERSION" && test -n "$SIMDJSON_VERSION" && test -n "$RAPIDJSON_DEB_VERSION" && test -n "$DEBIAN_VERSION_ID" && \
     python3 /tmp/cyclonedx.py "${BASE_DIR}/share/sbom/apache-arrow.cdx.json" \
         "arrow|${ARROW_VERSION}|pkg:generic/apache/arrow@${ARROW_VERSION}|cpe:2.3:a:apache:arrow:${ARROW_VERSION}:*:*:*:*:*:*:*|Apache-2.0" \
         "thrift|${THRIFT_VERSION}|pkg:generic/apache/thrift@${THRIFT_VERSION}|cpe:2.3:a:apache:thrift:${THRIFT_VERSION}:*:*:*:*:*:*:*|Apache-2.0" \
         "xsimd|${XSIMD_VERSION}|pkg:github/xtensor-stack/xsimd@${XSIMD_VERSION}||BSD-3-Clause" \
-        "simdjson|${SIMDJSON_VERSION}|pkg:github/simdjson/simdjson@v${SIMDJSON_VERSION}|cpe:2.3:a:simdjson:simdjson:${SIMDJSON_VERSION}:*:*:*:*:*:*:*|Apache-2.0" && \
+        "simdjson|${SIMDJSON_VERSION}|pkg:github/simdjson/simdjson@v${SIMDJSON_VERSION}|cpe:2.3:a:simdjson:simdjson:${SIMDJSON_VERSION}:*:*:*:*:*:*:*|Apache-2.0" \
+        "rapidjson|${RAPIDJSON_DEB_VERSION}|pkg:deb/debian/rapidjson-dev@${RAPIDJSON_DEB_VERSION}?upstream=${RAPIDJSON_DEB_SOURCE}&distro=debian-${DEBIAN_VERSION_ID}||MIT" && \
     rm -rf thrift arrow && \
     echo "${BASE_DIR}/lib" > /etc/ld.so.conf.d/geosgb.conf && \
     ldconfig
 
 # Configure Python virtualenv: pip, setuptools, wheel (GDAL bindings build) and numpy, pinned with
-# hashes in requirements/venv.txt (generated from requirements/venv.in)
-RUN --mount=type=bind,source=requirements/venv.txt,target=/tmp/venv-requirements.txt \
+# hashes in requirements/gdal-build.txt (generated from requirements/gdal-build.in)
+RUN --mount=type=bind,source=requirements/gdal-build.txt,target=/tmp/gdal-build.txt \
     python3 -m venv --prompt geosgb ${BASE_DIR}/venv && \
-    ${BASE_DIR}/venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/venv-requirements.txt
+    ${BASE_DIR}/venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/gdal-build.txt
 
 # Compile and install GDAL
 ARG GDAL_VERSION=3.12.4
@@ -295,6 +306,27 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
     python3 /tmp/cyclonedx.py "${BASE_DIR}/share/sbom/gdal.cdx.json" \
         "gdal|${GDAL_VERSION}|pkg:generic/osgeo/gdal@${GDAL_VERSION}|cpe:2.3:a:osgeo:gdal:${GDAL_VERSION}:*:*:*:*:*:*:*|MIT"
 
+# pyarrow, built from the same Arrow source tarball (python/) against the Arrow C++ libraries of ${BASE_DIR}/lib
+# (PYARROW_BUNDLE_ARROW_CPP=OFF, the default; the PyPI wheel bundles its own copy of Arrow C++).
+# The build dependencies (hashed in requirements/pyarrow-build.txt) go to a temporary venv that builds the wheel,
+# so only pyarrow, which has no runtime dependencies, is installed in ${BASE_DIR}/venv.
+# scikit-build-core builds with CMAKE_BUILD_TYPE=Release (-O3), and CMake takes CFLAGS/CXXFLAGS/LDFLAGS from the
+# environment, which carry the hardening flags
+RUN --mount=type=bind,source=requirements/pyarrow-build.txt,target=/tmp/pyarrow-build.txt \
+    apache_download() { wget -qO "$2" "https://dlcdn.apache.org/$1" || wget -qO "$2" "https://archive.apache.org/dist/$1"; } && \
+    apache_download "arrow/arrow-${ARROW_VERSION}/apache-arrow-${ARROW_VERSION}.tar.gz" arrow.tar.gz && \
+    echo "${ARROW_SHA256}  arrow.tar.gz" | sha256sum -c - && \
+    mkdir arrow && \
+    tar -zxf arrow.tar.gz -C arrow --strip-components=1 && \
+    rm arrow.tar.gz && \
+    /usr/local/bin/python3 -m venv /tmp/pyarrow-build && \
+    /tmp/pyarrow-build/bin/pip install --no-cache-dir --require-hashes -r /tmp/pyarrow-build.txt && \
+    CMAKE_PREFIX_PATH=${BASE_DIR} CMAKE_BUILD_PARALLEL_LEVEL="$(nproc)" \
+    CFLAGS="${HARDENING_CFLAGS}" CXXFLAGS="${HARDENING_CFLAGS}" LDFLAGS="${HARDENING_LDFLAGS}" \
+        /tmp/pyarrow-build/bin/pip wheel --no-cache-dir --no-build-isolation --no-deps -w /tmp/pyarrow-wheel ./arrow/python && \
+    ${BASE_DIR}/venv/bin/pip install --no-cache-dir --no-index --no-deps /tmp/pyarrow-wheel/pyarrow-${ARROW_VERSION}-*.whl && \
+    rm -rf arrow /tmp/pyarrow-build /tmp/pyarrow-wheel
+
 # venv first, so python/pip in the shell resolve to the virtualenv
 ENV GDAL_DATA=${BASE_DIR}/share/gdal \
     VIRTUAL_ENV=${BASE_DIR}/venv \
@@ -335,7 +367,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG BASE_DIR
 
-RUN GDAL_ELF_DIRS=("${BASE_DIR}/bin" "${BASE_DIR}/lib" ${BASE_DIR}/venv/lib/python*/site-packages/osgeo) && \
+RUN GDAL_ELF_DIRS=("${BASE_DIR}/bin" "${BASE_DIR}/lib" ${BASE_DIR}/venv/lib/python*/site-packages/{osgeo,pyarrow}) && \
     # build-only files (sources, headers, CMake/pkg-config files, static libs, Oracle SDK)
     rm -rf "${BASE_DIR}/src" "${BASE_DIR}/include" "${BASE_DIR}/lib/cmake" "${BASE_DIR}/lib/pkgconfig" && \
     find "${BASE_DIR}/lib" -name '*.a' -delete && \

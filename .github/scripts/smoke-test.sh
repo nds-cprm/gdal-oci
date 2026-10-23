@@ -73,13 +73,40 @@ if [ "$VARIANT" = release-nopy ]; then
         || { echo "Python encontrado na imagem release-nopy" >&2; exit 1; }
     echo "## sem Python ok"
 else
-echo "## venv: versões fixadas em requirements/venv.txt"
+echo "## venv: versões fixadas em requirements/gdal-build.txt"
 # shellcheck disable=SC2046
 run python -c '
 import sys, importlib.metadata as m
 bad = [p for p in sys.argv[1:] if m.version(p.split("==")[0]) != p.split("==")[1]]
 assert not bad, bad
-print(" ".join(sys.argv[1:]))' $(sed -n 's/^\([A-Za-z0-9_.-]*\)==\([^ ]*\).*/\1==\2/p' "$(dirname "$0")/../../requirements/venv.txt")
+print(" ".join(sys.argv[1:]))' $(sed -n 's/^\([A-Za-z0-9_.-]*\)==\([^ ]*\).*/\1==\2/p' "$(dirname "$0")/../../requirements/gdal-build.txt")
+
+echo "## pyarrow: compilado contra o Arrow C++ de /opt/geosgb/lib, sem cópia própria"
+run python -c '
+import glob, os, sys
+import pyarrow as pa, pyarrow.parquet as pq
+import pyarrow.acero, pyarrow.compute, pyarrow.csv, pyarrow.dataset, pyarrow.json
+from osgeo import gdal, ogr, osr
+gdal.UseExceptions()
+assert pa.__version__ == sys.argv[1] and pa.cpp_version == sys.argv[1], (pa.__version__, pa.cpp_version)
+# a wheel do PyPI traz libarrow*.so dentro de pyarrow/; aqui elas vêm de /opt/geosgb/lib, as mesmas do GDAL
+assert not glob.glob(os.path.join(os.path.dirname(pa.__file__), "libarrow.so*"))
+libs = {l.split()[-1] for l in open("/proc/self/maps") if "libarrow" in l or "libparquet" in l}
+assert libs and all(l.startswith("/opt/geosgb/lib/") or "/pyarrow/libarrow_python" in l for l in libs), libs
+# GDAL -> pyarrow (ArrowStream) e pyarrow -> GDAL (Parquet escrito pelo pyarrow, lido pelo driver do GDAL)
+srs = osr.SpatialReference(); srs.ImportFromEPSG(4326)
+ds = gdal.GetDriverByName("MEM").CreateVector("")  # referência mantida: a camada depende do dataset
+lyr = ds.CreateLayer("p", srs, ogr.wkbPoint)
+lyr.CreateField(ogr.FieldDefn("n", ogr.OFTInteger))
+f = ogr.Feature(lyr.GetLayerDefn()); f["n"] = 1; f.SetGeometry(ogr.CreateGeometryFromWkt("POINT (-45 -5)")); lyr.CreateFeature(f)
+# o Layer implementa a PyCapsule interface do Arrow (__arrow_c_stream__)
+table = pa.table(lyr)
+assert table.num_rows == 1 and table.column("n").to_pylist() == [1], table
+pq.write_table(table, "/tmp/pa.parquet", compression="zstd")
+pds = ogr.Open("/tmp/pa.parquet")
+assert pds.GetLayer(0).GetFeatureCount() == 1
+print("pyarrow", pa.__version__)' "$(sed -n 's/^ARG ARROW_VERSION=//p' "$(dirname "$0")/../../Dockerfile")"
+echo "## pyarrow ok"
 
 echo "## pip: só o do venv (o pip do sistema da imagem python é removido)"
 run sh -c '
@@ -97,7 +124,9 @@ echo "## proteções de compilação (HARDENING_CFLAGS/LDFLAGS)"
 run sh -c '
     command -v readelf > /dev/null || { echo "readelf ausente, pulando"; exit 0; }
     for f in /opt/geosgb/lib/libgdal.so /opt/geosgb/lib/libarrow.so /opt/geosgb/lib/libparquet.so /opt/geosgb/bin/gdalinfo \
-             /opt/geosgb/venv/lib/python*/site-packages/osgeo/_gdal.*.so; do
+             /opt/geosgb/venv/lib/python*/site-packages/osgeo/_gdal.*.so \
+             /opt/geosgb/venv/lib/python*/site-packages/pyarrow/lib.*.so \
+             /opt/geosgb/venv/lib/python*/site-packages/pyarrow/libarrow_python.so; do
         readelf -dW "$f" | grep -q BIND_NOW || { echo "sem RELRO completo: $f" >&2; exit 1; }
         readelf -sW --dyn-syms "$f" | grep -q __stack_chk_fail || { echo "sem stack protector: $f" >&2; exit 1; }
         readelf -sW --dyn-syms "$f" | grep -q "_chk@" || { echo "sem _FORTIFY_SOURCE: $f" >&2; exit 1; }
@@ -109,7 +138,7 @@ echo "## SBOM dos componentes fora do apt (/opt/geosgb/share/sbom)"
 run sh -c '
     set -e
     cat /opt/geosgb/share/sbom/*.cdx.json > /tmp/sbom.json
-    for n in gdal arrow thrift xsimd simdjson oracle-instantclient; do
+    for n in gdal arrow thrift xsimd simdjson rapidjson oracle-instantclient; do
         grep -q "\"name\": \"$n\"" /tmp/sbom.json || { echo "SBOM sem $n" >&2; exit 1; }
     done
     v=$(gdalinfo --version | sed -n "s/^GDAL \([^ ,]*\).*/\1/p")

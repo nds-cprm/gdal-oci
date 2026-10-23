@@ -9,8 +9,8 @@ updates:
     github-actions:
       patterns: ["*"]
 
-# keeps the hashed virtualenv pins (requirements/venv.in -> venv.txt, pip-compile) up to date;
-# a numpy major upgrade needs care (see the comment in venv.in)
+# keeps the hashed virtualenv pins (requirements/gdal-build.in -> gdal-build.txt, pip-compile) up to date;
+# a numpy major upgrade needs care (see the comment in gdal-build.in)
 - package-ecosystem: pip
   directory: /requirements
   schedule:
