@@ -6,15 +6,15 @@ Imagens Docker base com **GDAL 3.12.4 compilado do código-fonte**, bindings Pyt
 
 O mesmo [Dockerfile](Dockerfile) gera três imagens:
 
-| | `release-py` | `devel` | `release-nopy` |
+| | `devel` | `release-py` | `release-nopy` |
 |---|---|---|---|
-| **Para quê** | Base de imagens de aplicação (produção) | Compilar código contra o GDAL e depurar | Utilitários do GDAL e aplicações C/C++, sem Python |
-| **Base** | `python:3.12-slim-trixie` | `python:3.12-trixie` | `debian:trixie-slim` |
-| **Tamanho** | ~580 MB | ~2,4 GB | ~450 MB |
-| **GDAL** | Binários e bibliotecas, sem símbolos de debug | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` | Igual ao `release-py` |
-| **Python** | Virtualenv com os bindings `osgeo` e numpy | Igual ao `release-py` | Não tem (nem os utilitários em Python, como `gdal_calc.py`) |
-| **Ferramentas** | Só o runtime | `build-essential`, `cmake`, `swig`, `gdb` e os pacotes `-dev` de todas as dependências | Só o runtime |
-| **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `release-py` | Igual ao `release-py` |
+| **Para quê** | Compilar código contra o GDAL e depurar | Base de imagens de aplicação (produção) | Utilitários do GDAL e aplicações C/C++, sem Python |
+| **Base** | `python:3.12-trixie` | `python:3.12-slim-trixie` | `debian:trixie-slim` |
+| **Tamanho** | ~2,4 GB | ~580 MB | ~450 MB |
+| **GDAL** | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` | Binários e bibliotecas, sem símbolos de debug | Igual ao `release-py` |
+| **Python** | Virtualenv com os bindings `osgeo` e numpy | Igual ao `devel` | Não tem (nem os utilitários em Python, como `gdal_calc.py`) |
+| **Ferramentas** | `build-essential`, `cmake`, `swig`, `gdb` e os pacotes `-dev` de todas as dependências | Só o runtime | Só o runtime |
+| **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `devel` | Igual ao `devel` |
 | **CMD** | `python3` | `python3` | `bash` |
 
 As três imagens têm o mesmo GDAL compilado uma única vez (`-O3`). O `release-py` é o `devel` sem os símbolos de debug, sem os arquivos usados só no build e com apenas as bibliotecas de runtime que o GDAL realmente usa (detectadas com `ldd` durante o build). O `release-nopy` é o `release-py` sem o Python e sem o virtualenv.
