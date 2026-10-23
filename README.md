@@ -10,7 +10,7 @@ O mesmo [Dockerfile](Dockerfile) gera duas imagens:
 |---|---|---|
 | **Para quê** | Base de imagens de aplicação (produção) | Compilar código contra o GDAL e depurar |
 | **Base** | `python:3.12-slim-trixie` | `python:3.12-trixie` |
-| **Tamanho** | ~630 MB | ~2,7 GB |
+| **Tamanho** | ~580 MB | ~2,4 GB |
 | **GDAL** | Binários e bibliotecas, sem símbolos de debug | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` |
 | **Ferramentas** | Só o runtime | `build-essential`, `cmake`, `swig`, `gdb` e os pacotes `-dev` de todas as dependências |
 | **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `release` |
@@ -26,10 +26,15 @@ As imagens são publicadas em `docker.io/ndscprm/gdal`. A tag é formada pela **
 |---|---|---|
 | `release` | `<gdal>-py<python>` | `docker.io/ndscprm/gdal:3.12.4-py3.12` |
 | `devel` | `<gdal>-py<python>-devel` | `docker.io/ndscprm/gdal:3.12.4-py3.12-devel` |
+| `release` (build específico) | `<gdal>-py<python>-<AAAAMMDD>` | `docker.io/ndscprm/gdal:3.12.4-py3.12-20261026` |
+| `devel` (build específico) | `<gdal>-py<python>-<AAAAMMDD>-devel` | `docker.io/ndscprm/gdal:3.12.4-py3.12-20261026-devel` |
 
 - `<gdal>` é a versão completa do GDAL (`GDAL_VERSION`, ex.: `3.12.4`), e `<python>` é a versão `major.minor` do Python (`PYTHON_VERSION`, ex.: `3.12`).
 - As duas tags de uma mesma versão são **sempre geradas e publicadas juntas, a partir do mesmo build**. Elas são feitas para serem usadas em conjunto (veja [Padrão recomendado](#padrão-recomendado-compilar-no-devel-rodar-no-release)).
-- As outras versões incluídas na imagem (Debian, Arrow, Oracle Instant Client, numpy) não entram na tag. Para fixar exatamente um build, referencie a imagem pelo digest (`docker.io/ndscprm/gdal:3.12.4-py3.12@sha256:…`).
+- As imagens são **refeitas toda semana** para incorporar as correções de segurança do Debian e do Python. As tags `<gdal>-py<python>[-devel]` são móveis e sempre apontam para o build mais recente. As tags com data (`-<AAAAMMDD>`, em UTC) identificam um build e nunca são sobrescritas; um segundo build no mesmo dia recebe `.2`, `.3`, ... Para fixar exatamente um build, use a tag com data ou o digest (`docker.io/ndscprm/gdal:3.12.4-py3.12@sha256:…`).
+- As outras versões incluídas na imagem (Debian, Arrow, Oracle Instant Client, numpy) não entram na tag.
+- Nenhuma tag é publicada se o build tiver vulnerabilidade **crítica com correção disponível** (verificação no CI com o Grype). Os CVEs que não se aplicam a esta imagem, por exemplo de drivers do GDAL que não são compilados, estão declarados em [vex/gdal-oci.openvex.json](vex/gdal-oci.openvex.json) (OpenVEX).
+- **Tag legada:** a `3.4.3` é de 2023 e não foi gerada por este Dockerfile. Ela é mantida só para compatibilidade, **sem manutenção**: não é refeita, não recebe correções de segurança e não tem SBOM. Não use em projetos novos; migre para uma tag `<gdal>-py<python>`.
 
 ## O que vem incluído
 
@@ -38,7 +43,7 @@ Tudo fica em `/opt/geosgb`:
 | Caminho | Conteúdo |
 |---|---|
 | `/opt/geosgb/bin` | Utilitários do GDAL (`gdalinfo`, `ogr2ogr`, `gdal_translate`, …) |
-| `/opt/geosgb/lib` | `libgdal.so` |
+| `/opt/geosgb/lib` | `libgdal.so` e as bibliotecas do Apache Arrow/Parquet (`libarrow*.so`, `libparquet.so`) |
 | `/opt/geosgb/share/gdal` | Dados do GDAL (`GDAL_DATA`) |
 | `/opt/geosgb/venv` | Virtualenv Python com os bindings `osgeo` e numpy |
 | `/opt/geosgb/oracle` | Oracle Instant Client 19.32 (basiclite; o SDK fica só no `devel`) |
@@ -85,7 +90,9 @@ docker push ${IMAGE}:${TAG}
 
 Ao mudar o `GDAL_VERSION`, passe também o `GDAL_SHA256` correspondente (veja [Versões e build args](#versões-e-build-args)). Os valores padrão do Dockerfile correspondem ao GDAL 3.12.4 com Python 3.12.
 
-A compilação do GDAL leva cerca de 30 minutos. Só foi testado em `linux/amd64`. O Dockerfile também aceita `linux/arm64` (o Oracle Instant Client tem as duas arquiteturas), mas esse build ainda não foi validado.
+O build compila o Apache Arrow e o GDAL e leva de 15 a 25 minutos, conforme o número de núcleos da máquina. As arquiteturas suportadas são `linux/amd64` e `linux/arm64` (o Oracle Instant Client tem as duas), e o CI faz o build e o smoke test de ambas.
+
+Os comandos acima servem para testes locais. As imagens publicadas devem sair do [CI](.github/workflows/docker-image.yml): um `docker push` manual gera uma imagem sem attestations de SBOM e provenance, que não passou pelo smoke test nem pela verificação de vulnerabilidades e não tem tag datada.
 
 ## Usando o `release` como base
 
@@ -164,10 +171,39 @@ ENTRYPOINT ["/docker-entrypoint.sh", "meu-entrypoint.sh"]
 
 As duas imagens já incluem o script [`10-enable-nss-wrapper.sh`](docker-entrypoint.d/10-enable-nss-wrapper.sh). Quando o container roda com um UID que não existe no `/etc/passwd` (como no OpenShift ou com `docker run --user 12345:0`), ele usa o `nss_wrapper` para:
 
-- criar um usuário virtual com o nome de `USER_NAME` (padrão `sgb`), para que `whoami`, `getpass.getuser()` e bibliotecas que consultam o passwd funcionem;
+- criar um usuário virtual com o nome de `USER_NAME` (padrão `sgb`), para que `whoami`, `getpass.getuser()` e bibliotecas que consultam o passwd funcionem. O nome deve começar por letra ou `_` e ter só letras, dígitos, `.`, `_` ou `-` (até 32 caracteres). Um valor inválido impede o container de iniciar;
 - definir `HOME=/tmp` quando o `HOME` herdado for `/` ou não for gravável.
 
 Rodando como root ou com um usuário que já existe na imagem, o script não faz nada. Se a imagem derivada criar o próprio usuário (`useradd` + `USER`), o nss_wrapper também não entra em ação.
+
+**Sistema de arquivos somente leitura.** As imagens funcionam com `--read-only` (no Kubernetes/OpenShift, `readOnlyRootFilesystem: true`). Com UID arbitrário, porém, o nss_wrapper grava o `passwd` e o `group` virtuais num diretório temporário. Por isso o container precisa de um `/tmp` gravável; sem ele, não inicia e informa o motivo no stderr. Use um `/tmp` em memória:
+
+```bash
+# volume para o HOME, gravável pelo grupo 0 (o UID arbitrário roda com GID 0)
+docker volume create dados-app
+docker run --rm -v dados-app:/v docker.io/ndscprm/gdal:3.12.4-py3.12 chmod 0775 /v
+
+docker run --read-only --tmpfs /tmp --user 12345:0 \
+  -e HOME=/home/app -v dados-app:/home/app \
+  docker.io/ndscprm/gdal:3.12.4-py3.12 python app.py
+```
+
+```yaml
+# Kubernetes/OpenShift (trecho do pod)
+securityContext:
+  readOnlyRootFilesystem: true
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+volumes:
+  - name: tmp
+    emptyDir:
+      medium: Memory
+```
+
+- `TMPDIR` também é aceito (o diretório temporário vira `$TMPDIR`). Não aponte para um volume persistente, porque cada start deixa ali um diretório `nss_wrapper.*`.
+- Um volume montado no `HOME` precisa ser gravável pelo UID do container. Se não for, o script troca o `HOME` para `/tmp` sem erro, e o que for gravado ali se perde quando o container termina. Um volume nomeado novo do Docker nasce sem escrita para outros UIDs: no primeiro uso, ele copia a permissão do diretório que existe na imagem naquele caminho (`/root` é 0700). Se o caminho não existir na imagem, como `/home/app`, o volume é criado como `root` com 0755. Por isso o exemplo acima faz o `chmod 0775` antes. No Kubernetes/OpenShift, use `fsGroup` no `securityContext` do pod (a SCC padrão do OpenShift já atribui um).
+- Rodando como root, não há essa exigência: o nss_wrapper não entra em ação.
 
 ### Variáveis de ambiente
 
@@ -177,9 +213,36 @@ Rodando como root ou com um usuário que já existe na imagem, o script não faz
 | `VIRTUAL_ENV` | `/opt/geosgb/venv` | Venv ativo |
 | `PATH` | `/opt/geosgb/venv/bin:/opt/geosgb/bin:…` | Venv e utilitários do GDAL primeiro |
 | `ENTRYPOINT_QUIET_LOGS` | (vazia) | Qualquer valor silencia os logs do entrypoint |
-| `USER_NAME` | `sgb` | Nome do usuário virtual criado pelo nss_wrapper |
+| `USER_NAME` | `sgb` | Nome do usuário virtual criado pelo nss_wrapper (letras, dígitos, `.`, `_` ou `-`; começando por letra ou `_`) |
 
 As opções de configuração do GDAL (`GDAL_HTTP_*`, `CPL_*`, `OGR_*` etc.) funcionam normalmente como variáveis de ambiente.
+
+### Abrindo arquivos enviados por usuários
+
+Esta seção vale para aplicações que abrem com o GDAL arquivos ou caminhos vindos de fora (upload, parâmetro de API, URL informada pelo usuário). Para o GDAL, **abrir um arquivo já é processá-lo**. Esta imagem habilita drivers que acessam a rede (WMS, WCS, WFS, OAPIF, OGCAPI, Elasticsearch, `/vsicurl/`) e drivers que abrem outros datasets por dentro (VRT e os de serviços OGC). Por isso, um "arquivo" malicioso pode fazer o servidor acessar URLs internas (SSRF). Exemplos testados nesta imagem: um `.vrt` cuja fonte é `/vsicurl/http://<host interno>/...` e um `.xml` do driver WMS apontando para um endereço interno. Nos dois casos o GDAL faz a requisição assim que o arquivo é aberto.
+
+Recomendações, da mais importante para a menos:
+
+1. **Restrinja os drivers na abertura.** Liste só os formatos que a aplicação aceita. Um arquivo de outro formato (VRT, XML do WMS etc.) é recusado:
+
+   ```python
+   from osgeo import gdal
+   gdal.UseExceptions()
+   ds = gdal.OpenEx(caminho, gdal.OF_VECTOR, allowed_drivers=["GPKG", "GeoJSON", "Parquet"])
+   ```
+
+2. **Desligue globalmente os drivers que a aplicação não usa** com `GDAL_SKIP` (nomes curtos separados por espaço, valendo para drivers raster e vetoriais). Por exemplo, numa aplicação que só lê arquivos locais:
+
+   ```dockerfile
+   ENV GDAL_SKIP="VRT WMS WCS WFS OAPIF OGCAPI Elasticsearch"
+   ```
+
+3. **Nunca repasse ao GDAL uma string do usuário como caminho.** Grave o upload com um nome gerado pela aplicação, num diretório próprio, e abra esse caminho. Isso evita prefixos como `/vsicurl/`, `/vsizip/` e `/vsis3/` e strings de conexão como `PG:`, `OCI:`, `WFS:` e `ES:`. Pelo mesmo motivo, não aceite do usuário opções de utilitários (`gdal.Translate`/`gdal.VectorTranslate`, `-sql`, `-where`), opções de configuração (`--config`, `gdal.SetConfigOption`) nem expressões do `gdal_calc` (avaliadas com `eval()`).
+4. **Restrinja a saída de rede do container** (NetworkPolicy no Kubernetes/OpenShift, regras de firewall) ao que a aplicação realmente acessa, em especial a rede interna e o endereço de metadados da nuvem (`169.254.169.254`). Isso limita o estrago se algo passar pelas camadas anteriores.
+5. **Limite os recursos.** Arquivos pequenos podem declarar dimensões enormes ou descompactar para gigabytes. Confira `RasterXSize`, `RasterYSize` e `RasterCount` antes de ler os dados. Rode com limites de memória e CPU no container e com timeout no processamento.
+6. **Isole o processo.** Rode como usuário sem privilégios (a imagem já suporta UID arbitrário). Se possível, use sistema de arquivos somente leitura (`--read-only` com `/tmp` gravável). Senhas de conexões (Oracle, PostGIS) ficam na memória do processo que abre os arquivos.
+
+Mais detalhes: [Security considerations](https://gdal.org/en/stable/user/security.html), na documentação do GDAL.
 
 ## Usando o `devel` como base
 
@@ -253,11 +316,17 @@ Para analisar um core dump gerado no `release`, abra-o no `devel` da mesma vers�
 | `PYTHON_VERSION` | `3.12` |
 | `DEBIAN_VERSION` | `trixie` |
 | `GDAL_VERSION` / `GDAL_SHA256` | `3.12.4` / SHA256 do tarball |
-| `APACHE_ARROW_VERSION` | `26.0` |
-| `NUMPY_VERSION` | `2.5.4` (versão usada para compilar os bindings) |
+| `ARROW_VERSION` / `ARROW_SHA256` | `26.0.0` / SHA256 do tarball |
+| `THRIFT_VERSION` / `THRIFT_SHA256` | `0.25.0` / SHA256 do tarball |
+| `HARDENING_CFLAGS` / `HARDENING_LDFLAGS` | stack protector, `_FORTIFY_SOURCE=3`, stack clash protection e RELRO completo (GDAL, Arrow e Thrift) |
+| numpy | `2.5.4` (versão usada para compilar os bindings; fixada com hash em [requirements/venv.txt](requirements/venv.txt), junto com pip, setuptools e wheel) |
 | Oracle Instant Client | `19.32.0.0.0` |
 
-Todos os downloads são verificados contra valores fixados no Dockerfile: SHA256 do GDAL e do Oracle, fingerprint GPG do repositório do Arrow. Para mudar a versão do GDAL, é preciso atualizar também o `GDAL_SHA256`. O procedimento está no [CLAUDE.md](CLAUDE.md).
+Todos os downloads são verificados contra valores fixados no repositório: o SHA256 do GDAL, do Arrow, do Thrift e do Oracle no Dockerfile, e os hashes dos pacotes Python do venv em [requirements/venv.txt](requirements/venv.txt) (`pip install --require-hashes`). Para mudar a versão de um deles, é preciso atualizar também o hash correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md). As imagens base `python` são referenciadas por tag, para que o rebuild semanal pegue as correções delas. O digest exato usado em cada build fica registrado no provenance.
+
+O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do repositório apt do Arrow, para que o Parquet use uma versão do Apache Thrift com as correções de segurança em dia. O Thrift do Debian trixie (0.19) tem CVEs abertos e sem previsão de correção. O Thrift fica embutido no `libparquet.so` (link estático), então não aparece como pacote na imagem.
+
+**SBOM.** As imagens publicadas têm attestations de SBOM (SPDX) e de provenance. Para ver: `docker buildx imagetools inspect docker.io/ndscprm/gdal:3.12.4-py3.12 --format '{{ json .SBOM }}'`. Os componentes que não vêm do apt (GDAL, Arrow, Thrift, xsimd, simdjson, Oracle Instant Client) também ficam descritos em CycloneDX em `/opt/geosgb/share/sbom/`, dentro da imagem. Para analisar a imagem com o Grype, use a attestation (`grype sbom:<arquivo SPDX>`). Analisando a imagem direto, o Grype não lê esses arquivos. Outra opção é gerar o SBOM com `syft <imagem> --select-catalogers +sbom-cataloger -o spdx-json` e passá-lo ao Grype.
 
 ## Licença
 

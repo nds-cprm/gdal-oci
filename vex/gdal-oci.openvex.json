@@ -1,0 +1,209 @@
+{
+  "@context": "https://openvex.dev/ns/v0.2.0",
+  "@id": "https://github.com/nds-cprm/gdal-oci/blob/main/vex/gdal-oci.openvex.json",
+  "author": "nds-cprm/gdal-oci maintainers",
+  "timestamp": "2026-10-22T00:00:00Z",
+  "version": 1,
+  "statements": [
+    {
+      "vulnerability": {
+        "name": "CVE-2026-49014",
+        "aliases": [
+          "GHSA-wphc-7cm7-8mf7"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The netCDF driver (frmts/netcdf) is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-wphc-7cm7-8mf7",
+        "aliases": [
+          "CVE-2026-49014"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The netCDF driver (frmts/netcdf) is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-8084"
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-8086"
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-8087",
+        "aliases": [
+          "GHSA-h9rh-5ffh-h669"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-h9rh-5ffh-h669",
+        "aliases": [
+          "CVE-2026-8087"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-8088",
+        "aliases": [
+          "GHSA-j3f5-rw74-g4rv"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-j3f5-rw74-g4rv",
+        "aliases": [
+          "CVE-2026-8088"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-8212",
+        "aliases": [
+          "GHSA-r5m4-5vww-w9f5"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "GHSA-r5m4-5vww-w9f5",
+        "aliases": [
+          "CVE-2026-8212"
+        ]
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    },
+    {
+      "vulnerability": {
+        "name": "CVE-2026-8213"
+      },
+      "products": [
+        {
+          "@id": "pkg:generic/osgeo/gdal@3.12.4"
+        },
+        {
+          "@id": "pkg:pypi/gdal@3.12.4"
+        }
+      ],
+      "status": "not_affected",
+      "justification": "vulnerable_code_not_present",
+      "impact_statement": "The HDF4 driver, including HDF-EOS (frmts/hdf4/hdf-eos), is not built in this image: GDAL_BUILD_OPTIONAL_DRIVERS=OFF and the driver is not enabled."
+    }
+  ]
+}
