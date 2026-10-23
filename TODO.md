@@ -35,11 +35,6 @@ O job `scan` verifica só o `release`. O `devel` também é publicado e recebe a
 
 - Escanear também o `devel`, só como relatório (sem gate), ou com o mesmo gate.
 
-### Pacotes da imagem base no `release`
-O estágio `release` é sempre refeito e instala os pacotes de runtime atuais, mas não roda `apt-get upgrade` nos pacotes que já vêm na `python:slim`. Entre uma correção do Debian e a próxima versão da imagem base, a correção fica de fora.
-
-- Avaliar `apt-get upgrade -y` no `release`, no mesmo `RUN` do `apt-get install`.
-
 ### Exemplo Django
 Em [examples/django](examples/django/):
 

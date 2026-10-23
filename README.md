@@ -176,6 +176,35 @@ As duas imagens já incluem o script [`10-enable-nss-wrapper.sh`](docker-entrypo
 
 Rodando como root ou com um usuário que já existe na imagem, o script não faz nada. Se a imagem derivada criar o próprio usuário (`useradd` + `USER`), o nss_wrapper também não entra em ação.
 
+**Sistema de arquivos somente leitura.** As imagens funcionam com `--read-only` (no Kubernetes/OpenShift, `readOnlyRootFilesystem: true`). Com UID arbitrário, porém, o nss_wrapper grava o `passwd` e o `group` virtuais num diretório temporário. Por isso o container precisa de um `/tmp` gravável; sem ele, não inicia e informa o motivo no stderr. Use um `/tmp` em memória:
+
+```bash
+# volume para o HOME, gravável pelo grupo 0 (o UID arbitrário roda com GID 0)
+docker volume create dados-app
+docker run --rm -v dados-app:/v docker.io/ndscprm/gdal:3.12.4-py3.12 chmod 0775 /v
+
+docker run --read-only --tmpfs /tmp --user 12345:0 \
+  -e HOME=/home/app -v dados-app:/home/app \
+  docker.io/ndscprm/gdal:3.12.4-py3.12 python app.py
+```
+
+```yaml
+# Kubernetes/OpenShift (trecho do pod)
+securityContext:
+  readOnlyRootFilesystem: true
+volumeMounts:
+  - name: tmp
+    mountPath: /tmp
+volumes:
+  - name: tmp
+    emptyDir:
+      medium: Memory
+```
+
+- `TMPDIR` também é aceito (o diretório temporário vira `$TMPDIR`). Não aponte para um volume persistente, porque cada start deixa ali um diretório `nss_wrapper.*`.
+- Um volume montado no `HOME` precisa ser gravável pelo UID do container. Se não for, o script troca o `HOME` para `/tmp` sem erro, e o que for gravado ali se perde quando o container termina. Um volume nomeado novo do Docker nasce sem escrita para outros UIDs: no primeiro uso, ele copia a permissão do diretório que existe na imagem naquele caminho (`/root` é 0700). Se o caminho não existir na imagem, como `/home/app`, o volume é criado como `root` com 0755. Por isso o exemplo acima faz o `chmod 0775` antes. No Kubernetes/OpenShift, use `fsGroup` no `securityContext` do pod (a SCC padrão do OpenShift já atribui um).
+- Rodando como root, não há essa exigência: o nss_wrapper não entra em ação.
+
 ### Variáveis de ambiente
 
 | Variável | Valor padrão | Descrição |

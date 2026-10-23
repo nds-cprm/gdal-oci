@@ -10,8 +10,10 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG BASE_DIR
 
-# Install dependencies
+# Install dependencies; upgrade first applies the Debian fixes released after the python base image was built
+# (the layer is cached in CI, so devel only gets them again when the base image or this line changes)
 RUN apt-get -y update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -y upgrade && \
     apt-get install -y --no-install-recommends --no-install-suggests \
         build-essential \
         cmake \
@@ -357,8 +359,11 @@ ARG BASE_DIR
 
 COPY --from=staging /etc/ld.so.conf.d/oracle.conf /etc/ld.so.conf.d/geosgb.conf /etc/ld.so.conf.d/
 
+# upgrade applies the Debian fixes released after the python base image was built; this stage is never
+# cached in CI (no-cache-filters: release), so every build gets them
 RUN --mount=type=bind,from=staging,source=/tmp/runtime-packages.txt,target=/tmp/runtime-packages.txt \
     apt-get -y update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -y upgrade && \
     xargs -a /tmp/runtime-packages.txt \
         apt-get install -y --no-install-recommends --no-install-suggests && \
     # nss_wrapper is preloaded by the entrypoint, not linked by GDAL, so ldd does not list it
