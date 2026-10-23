@@ -1,12 +1,12 @@
 #!/bin/sh
-# Smoke test de uma imagem (release, devel ou nopy): versões, drivers, bindings Python e UID arbitrário.
-# Uso: .github/scripts/smoke-test.sh <imagem> [nopy]   (ex.: docker.io/ndscprm/gdal:3.12.4-py3.12)
-# Com "nopy" (imagem sem Python), as verificações do venv viram verificações de que o Python não existe.
+# Smoke test de uma imagem (release-py, devel ou release-nopy): versões, drivers, bindings Python e UID arbitrário.
+# Uso: .github/scripts/smoke-test.sh <imagem> [release-nopy]   (ex.: docker.io/ndscprm/gdal:3.12.4-py3.12)
+# Com "release-nopy" (imagem sem Python), as verificações do venv viram verificações de que o Python não existe.
 set -eu
 
-IMAGE=${1:?uso: $0 <imagem> [nopy]}
+IMAGE=${1:?uso: $0 <imagem> [release-nopy]}
 VARIANT=${2:-}
-case "$VARIANT" in "" | nopy) ;; *) echo "variante inválida: $VARIANT (use nopy ou nada)" >&2; exit 1 ;; esac
+case "$VARIANT" in "" | release-nopy) ;; *) echo "variante inválida: $VARIANT (use release-nopy ou nada)" >&2; exit 1 ;; esac
 
 run() {
     docker run --rm -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" "$@"
@@ -18,10 +18,10 @@ VECTOR_DRIVERS="OCI PostgreSQL PGDUMP SQLite GPKG OpenFileGDB Parquet Arrow KML 
 
 echo "## versões"
 run gdalinfo --version
-if [ "$VARIANT" != nopy ]; then
+if [ "$VARIANT" != release-nopy ]; then
     run python -c "import numpy; from osgeo import gdal, gdal_array; print('osgeo', gdal.__version__, '| numpy', numpy.__version__)"
 fi
-# certificados das CAs (cURL: HTTPS, serviços OGC, /vsicurl/); na imagem python vêm da base, na nopy são instalados
+# certificados das CAs (cURL: HTTPS, serviços OGC, /vsicurl/); na release-py vêm da base python, na release-nopy são instalados
 run test -s /etc/ssl/certs/ca-certificates.crt
 
 missing=""
@@ -66,11 +66,11 @@ run sh -c '
     ! dpkg-query -W -f "\${Status}\n" "libthrift*" 2> /dev/null | grep -q "ok installed"'
 echo "## Parquet ok"
 
-if [ "$VARIANT" = nopy ]; then
+if [ "$VARIANT" = release-nopy ]; then
     echo "## sem Python (nem venv, nem /usr/local/bin/python3)"
     run sh -c '
         ! command -v python3 && ! command -v python && test ! -e /opt/geosgb/venv && test ! -e /usr/local/bin/python3' \
-        || { echo "Python encontrado na imagem nopy" >&2; exit 1; }
+        || { echo "Python encontrado na imagem release-nopy" >&2; exit 1; }
     echo "## sem Python ok"
 else
 echo "## venv: versões fixadas em requirements/venv.txt"
@@ -93,7 +93,7 @@ echo "## pip ok"
 fi
 
 echo "## proteções de compilação (HARDENING_CFLAGS/LDFLAGS)"
-# só no devel, que tem readelf; os binários do release são os mesmos, sem os símbolos de debug
+# só no devel, que tem readelf; os binários do release-py e do release-nopy são os mesmos, sem os símbolos de debug
 run sh -c '
     command -v readelf > /dev/null || { echo "readelf ausente, pulando"; exit 0; }
     for f in /opt/geosgb/lib/libgdal.so /opt/geosgb/lib/libarrow.so /opt/geosgb/lib/libparquet.so /opt/geosgb/bin/gdalinfo \
@@ -105,7 +105,7 @@ run sh -c '
     echo "ok"'
 
 echo "## SBOM dos componentes fora do apt (/opt/geosgb/share/sbom)"
-# em sh, sem Python (vale para a nopy); sbom/cyclonedx.py grava "name" e logo abaixo "version"
+# em sh, sem Python (vale para a release-nopy); sbom/cyclonedx.py grava "name" e logo abaixo "version"
 run sh -c '
     set -e
     cat /opt/geosgb/share/sbom/*.cdx.json > /tmp/sbom.json
@@ -115,7 +115,8 @@ run sh -c '
     v=$(gdalinfo --version | sed -n "s/^GDAL \([^ ,]*\).*/\1/p")
     grep -A1 "\"name\": \"gdal\"" /tmp/sbom.json | grep -q "\"version\": \"$v\"" \
         || { echo "versão do GDAL no SBOM diferente de $v" >&2; exit 1; }
-    grep -A1 "\"name\":" /tmp/sbom.json | sed -n "s/.*\"\(name\|version\)\": \"\([^\"]*\)\".*/\2/p" | paste -sd " " -'
+    # só as chaves dos componentes (6 espaços de indentação), não o "name" das licenças
+    sed -n "s/^      \"\(name\|version\)\": \"\([^\"]*\)\".*/\2/p" /tmp/sbom.json | paste -sd " " -'
 echo "## SBOM ok"
 
 echo "## UID arbitrário (nss_wrapper)"

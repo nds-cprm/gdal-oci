@@ -6,18 +6,18 @@ Imagens Docker base com **GDAL 3.12.4 compilado do código-fonte**, bindings Pyt
 
 O mesmo [Dockerfile](Dockerfile) gera três imagens:
 
-| | `release` | `devel` | `nopy` |
+| | `release-py` | `devel` | `release-nopy` |
 |---|---|---|---|
 | **Para quê** | Base de imagens de aplicação (produção) | Compilar código contra o GDAL e depurar | Utilitários do GDAL e aplicações C/C++, sem Python |
 | **Base** | `python:3.12-slim-trixie` | `python:3.12-trixie` | `debian:trixie-slim` |
-| **Tamanho** | ~580 MB | ~2,4 GB | ~NOPY_SIZE |
-| **GDAL** | Binários e bibliotecas, sem símbolos de debug | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` | Igual ao `release` |
-| **Python** | Virtualenv com os bindings `osgeo` e numpy | Igual ao `release` | Não tem (nem os utilitários em Python, como `gdal_calc.py`) |
+| **Tamanho** | ~580 MB | ~2,4 GB | ~450 MB |
+| **GDAL** | Binários e bibliotecas, sem símbolos de debug | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` | Igual ao `release-py` |
+| **Python** | Virtualenv com os bindings `osgeo` e numpy | Igual ao `release-py` | Não tem (nem os utilitários em Python, como `gdal_calc.py`) |
 | **Ferramentas** | Só o runtime | `build-essential`, `cmake`, `swig`, `gdb` e os pacotes `-dev` de todas as dependências | Só o runtime |
-| **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `release` | Igual ao `release` |
+| **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `release-py` | Igual ao `release-py` |
 | **CMD** | `python3` | `python3` | `bash` |
 
-As três imagens têm o mesmo GDAL compilado uma única vez (`-O3`). O `release` é o `devel` sem os símbolos de debug, sem os arquivos usados só no build e com apenas as bibliotecas de runtime que o GDAL realmente usa (detectadas com `ldd` durante o build). O `nopy` é o `release` sem o Python e sem o virtualenv.
+As três imagens têm o mesmo GDAL compilado uma única vez (`-O3`). O `release-py` é o `devel` sem os símbolos de debug, sem os arquivos usados só no build e com apenas as bibliotecas de runtime que o GDAL realmente usa (detectadas com `ldd` durante o build). O `release-nopy` é o `release-py` sem o Python e sem o virtualenv.
 
 ## Imagens e tags
 
@@ -25,15 +25,15 @@ As imagens são publicadas em `docker.io/ndscprm/gdal`. A tag é formada pela **
 
 | Imagem | Tag | Exemplo |
 |---|---|---|
-| `release` | `<gdal>-py<python>` | `docker.io/ndscprm/gdal:3.12.4-py3.12` |
+| `release-py` | `<gdal>-py<python>` | `docker.io/ndscprm/gdal:3.12.4-py3.12` |
 | `devel` | `<gdal>-py<python>-devel` | `docker.io/ndscprm/gdal:3.12.4-py3.12-devel` |
-| `release` (build específico) | `<gdal>-py<python>-<AAAAMMDD>` | `docker.io/ndscprm/gdal:3.12.4-py3.12-20261026` |
-| `devel` (build específico) | `<gdal>-py<python>-<AAAAMMDD>-devel` | `docker.io/ndscprm/gdal:3.12.4-py3.12-20261026-devel` |
-| `nopy` | `<gdal>-nopy` | `docker.io/ndscprm/gdal:3.12.4-nopy` |
-| `nopy` (build específico) | `<gdal>-<AAAAMMDD>-nopy` | `docker.io/ndscprm/gdal:3.12.4-20261026-nopy` |
+| `release-py` (build específico) | `<gdal>-py<python>-<AAAAMMDD>` | `docker.io/ndscprm/gdal:3.12.4-py3.12-20261026` |
+| `devel` (build específico) | `<gdal>-py<python>-devel-<AAAAMMDD>` | `docker.io/ndscprm/gdal:3.12.4-py3.12-devel-20261026` |
+| `release-nopy` | `<gdal>-nopy` | `docker.io/ndscprm/gdal:3.12.4-nopy` |
+| `release-nopy` (build específico) | `<gdal>-nopy-<AAAAMMDD>` | `docker.io/ndscprm/gdal:3.12.4-nopy-20261026` |
 
-- `<gdal>` é a versão completa do GDAL (`GDAL_VERSION`, ex.: `3.12.4`), e `<python>` é a versão `major.minor` do Python (`PYTHON_VERSION`, ex.: `3.12`). A tag do `nopy` não tem `<python>`, porque a imagem não tem Python.
-- As tags de uma mesma versão (`release`, `devel` e `nopy`) são **sempre geradas e publicadas juntas, a partir do mesmo build**. Elas são feitas para serem usadas em conjunto (veja [Padrão recomendado](#padrão-recomendado-compilar-no-devel-rodar-no-release)).
+- `<gdal>` é a versão completa do GDAL (`GDAL_VERSION`, ex.: `3.12.4`), e `<python>` é a versão `major.minor` do Python (`PYTHON_VERSION`, ex.: `3.12`). A tag do `release-nopy` não tem `<python>`, porque a imagem não tem Python.
+- As tags de uma mesma versão (`release-py`, `devel` e `release-nopy`) são **sempre geradas e publicadas juntas, a partir do mesmo build**. Elas são feitas para serem usadas em conjunto (veja [Padrão recomendado](#padrão-recomendado-compilar-no-devel-rodar-no-release-py)).
 - As imagens são **refeitas toda semana** para incorporar as correções de segurança do Debian e do Python. As tags `<gdal>-py<python>[-devel]` e `<gdal>-nopy` são móveis e sempre apontam para o build mais recente. As tags com data (`-<AAAAMMDD>`, em UTC) identificam um build e nunca são sobrescritas; um segundo build no mesmo dia recebe `.2`, `.3`, ... Para fixar exatamente um build, use a tag com data ou o digest (`docker.io/ndscprm/gdal:3.12.4-py3.12@sha256:…`).
 - As outras versões incluídas na imagem (Debian, Arrow, Oracle Instant Client, numpy) não entram na tag.
 - Nenhuma tag é publicada se o build tiver vulnerabilidade **crítica com correção disponível** (verificação no CI com o Grype). Os CVEs que não se aplicam a esta imagem, por exemplo de drivers do GDAL que não são compilados, estão declarados em [vex/gdal-oci.openvex.json](vex/gdal-oci.openvex.json) (OpenVEX).
@@ -48,7 +48,7 @@ Tudo fica em `/opt/geosgb`:
 | `/opt/geosgb/bin` | Utilitários do GDAL (`gdalinfo`, `ogr2ogr`, `gdal_translate`, …) |
 | `/opt/geosgb/lib` | `libgdal.so` e as bibliotecas do Apache Arrow/Parquet (`libarrow*.so`, `libparquet.so`) |
 | `/opt/geosgb/share/gdal` | Dados do GDAL (`GDAL_DATA`) |
-| `/opt/geosgb/venv` | Virtualenv Python com os bindings `osgeo` e numpy (não existe no `nopy`) |
+| `/opt/geosgb/venv` | Virtualenv Python com os bindings `osgeo` e numpy (não existe no `release-nopy`) |
 | `/opt/geosgb/oracle` | Oracle Instant Client 19.32 (basiclite; o SDK fica só no `devel`) |
 | `/opt/geosgb/include`, `lib/cmake`, `lib/pkgconfig`, `src` | Só no `devel` |
 
@@ -79,14 +79,14 @@ GDAL_VERSION=3.12.4
 PYTHON_VERSION=3.12
 TAG=${GDAL_VERSION}-py${PYTHON_VERSION}
 
-# devel primeiro; o release e o nopy reaproveitam o cache dele, então as três saem do mesmo build
+# devel primeiro; o release-py e o release-nopy reaproveitam o cache dele, então as três saem do mesmo build
 docker build --target devel \
   --build-arg GDAL_VERSION=${GDAL_VERSION} --build-arg PYTHON_VERSION=${PYTHON_VERSION} \
   -t ${IMAGE}:${TAG}-devel .
 docker build \
   --build-arg GDAL_VERSION=${GDAL_VERSION} --build-arg PYTHON_VERSION=${PYTHON_VERSION} \
   -t ${IMAGE}:${TAG} .
-docker build --target nopy \
+docker build --target release-nopy \
   --build-arg GDAL_VERSION=${GDAL_VERSION} --build-arg PYTHON_VERSION=${PYTHON_VERSION} \
   -t ${IMAGE}:${GDAL_VERSION}-nopy .
 
@@ -101,7 +101,7 @@ O build compila o Apache Arrow e o GDAL e leva de 15 a 25 minutos, conforme o n�
 
 Os comandos acima servem para testes locais. As imagens publicadas devem sair do [CI](.github/workflows/docker-image.yml): um `docker push` manual gera uma imagem sem attestations de SBOM e provenance, que não passou pelo smoke test nem pela verificação de vulnerabilidades e não tem tag datada.
 
-## Usando o `release` como base
+## Usando o `release-py` como base
 
 ### Ambiente Python
 
@@ -135,12 +135,12 @@ O diretório [examples/](examples/) tem imagens derivadas completas, cada uma co
 
 | Exemplo | Base | O que mostra |
 |---|---|---|
-| [examples/fiona](examples/fiona/) | `devel` → `release` | `fiona` compilado contra o GDAL da imagem, estendendo o venv no `devel` |
-| [examples/django](examples/django/) | `release` | GeoDjango + PostGIS (Compose): modelo com `PointField`, consulta por distância, admin com mapa, importação de qualquer formato do GDAL e migrations via `/docker-entrypoint.d` |
+| [examples/fiona](examples/fiona/) | `devel` → `release-py` | `fiona` compilado contra o GDAL da imagem, estendendo o venv no `devel` |
+| [examples/django](examples/django/) | `release-py` | GeoDjango + PostGIS (Compose): modelo com `PointField`, consulta por distância, admin com mapa, importação de qualquer formato do GDAL e migrations via `/docker-entrypoint.d` |
 
 ### Scripts de inicialização (`/docker-entrypoint.d`)
 
-O entrypoint (igual no `release` e no `devel`) executa os scripts `*.sh` de `/docker-entrypoint.d`, em ordem alfabética, antes do comando do container. A convenção é a mesma da imagem oficial do PostgreSQL:
+O entrypoint (igual no `release-py` e no `devel`) executa os scripts `*.sh` de `/docker-entrypoint.d`, em ordem alfabética, antes do comando do container. A convenção é a mesma da imagem oficial do PostgreSQL:
 
 | Permissão do arquivo | O que acontece | Use para |
 |---|---|---|
@@ -217,8 +217,8 @@ volumes:
 | Variável | Valor padrão | Descrição |
 |---|---|---|
 | `GDAL_DATA` | `/opt/geosgb/share/gdal` | Dados do GDAL |
-| `VIRTUAL_ENV` | `/opt/geosgb/venv` | Venv ativo (não definida no `nopy`) |
-| `PATH` | `/opt/geosgb/venv/bin:/opt/geosgb/bin:…` | Venv e utilitários do GDAL primeiro (no `nopy`, `/opt/geosgb/bin:…`) |
+| `VIRTUAL_ENV` | `/opt/geosgb/venv` | Venv ativo (não definida no `release-nopy`) |
+| `PATH` | `/opt/geosgb/venv/bin:/opt/geosgb/bin:…` | Venv e utilitários do GDAL primeiro (no `release-nopy`, `/opt/geosgb/bin:…`) |
 | `ENTRYPOINT_QUIET_LOGS` | (vazia) | Qualquer valor silencia os logs do entrypoint |
 | `USER_NAME` | `sgb` | Nome do usuário virtual criado pelo nss_wrapper (letras, dígitos, `.`, `_` ou `-`; começando por letra ou `_`) |
 
@@ -251,16 +251,16 @@ Recomendações, da mais importante para a menos:
 
 Mais detalhes: [Security considerations](https://gdal.org/en/stable/user/security.html), na documentação do GDAL.
 
-## Usando o `nopy` como base
+## Usando o `release-nopy` como base
 
-O `nopy` é o `release` sem Python, para quem só usa os utilitários do GDAL (`gdalinfo`, `ogr2ogr`, `gdal_translate`, `gdalwarp`, a CLI `gdal` etc.) ou a API C/C++. Tem os mesmos drivers, o mesmo entrypoint, o suporte a UID arbitrário (nss_wrapper) e as mesmas recomendações de [Abrindo arquivos enviados por usuários](#abrindo-arquivos-enviados-por-usuários).
+O `release-nopy` é o `release-py` sem Python, para quem só usa os utilitários do GDAL (`gdalinfo`, `ogr2ogr`, `gdal_translate`, `gdalwarp`, a CLI `gdal` etc.) ou a API C/C++. Tem os mesmos drivers, o mesmo entrypoint, o suporte a UID arbitrário (nss_wrapper) e as mesmas recomendações de [Abrindo arquivos enviados por usuários](#abrindo-arquivos-enviados-por-usuários).
 
 ```bash
 docker run --rm -v "$PWD:/data" -w /data docker.io/ndscprm/gdal:3.12.4-nopy \
   ogr2ogr -f Parquet saida.parquet entrada.gpkg
 ```
 
-O que **não** existe no `nopy`:
+O que **não** existe no `release-nopy`:
 
 - Python, o virtualenv `/opt/geosgb/venv`, os bindings `osgeo` e o numpy. A variável `VIRTUAL_ENV` não é definida, e o `PATH` tem só `/opt/geosgb/bin`.
 - Os utilitários do GDAL escritos em Python, que ficam no venv: `gdal_calc.py`, `gdal2tiles.py`, `gdal_merge.py`, `ogrmerge.py`, `gdal_polygonize.py`, `gdal_edit.py` e os demais `*.py`. Muitos têm equivalente na CLI `gdal` (ex.: `gdal raster calc`, `gdal raster tile`, `gdal vector concat`).
@@ -284,9 +284,9 @@ cmake -S . -B build -DCMAKE_PREFIX_PATH=/opt/geosgb   # find_package(GDAL CONFIG
 PKG_CONFIG_PATH=/opt/geosgb/lib/pkgconfig pkg-config --cflags --libs gdal
 ```
 
-### Padrão recomendado: compilar no `devel`, rodar no `release`
+### Padrão recomendado: compilar no `devel`, rodar no `release-py`
 
-Compile no `devel` e copie só o resultado para uma imagem baseada no `release`. Como os dois usam os mesmos caminhos e o mesmo GDAL, o binário roda sem ajustes. O exemplo abaixo foi testado:
+Compile no `devel` e copie só o resultado para uma imagem baseada no `release-py`. Como os dois usam os mesmos caminhos e o mesmo GDAL, o binário roda sem ajustes. O exemplo abaixo foi testado:
 
 ```dockerfile
 FROM docker.io/ndscprm/gdal:3.12.4-py3.12-devel AS build
@@ -299,13 +299,13 @@ COPY --from=build /src/build/app /usr/local/bin/
 CMD ["app"]
 ```
 
-Se o código compilado depender de **outras bibliotecas de sistema** além do GDAL, instale no `release` derivado os pacotes de runtime correspondentes (sem `-dev`).
+Se o código compilado depender de **outras bibliotecas de sistema** além do GDAL, instale no `release-py` derivado os pacotes de runtime correspondentes (sem `-dev`).
 
-**Use o `devel` e o `release` da mesma versão** (ex.: `docker.io/ndscprm/gdal:3.12.4-py3.12-devel` com `docker.io/ndscprm/gdal:3.12.4-py3.12`). Os artefatos compilados num build e copiados para a imagem de outro build podem não bater com o GDAL e o numpy dela.
+**Use o `devel` e o `release-py` da mesma versão** (ex.: `docker.io/ndscprm/gdal:3.12.4-py3.12-devel` com `docker.io/ndscprm/gdal:3.12.4-py3.12`). Os artefatos compilados num build e copiados para a imagem de outro build podem não bater com o GDAL e o numpy dela.
 
 ### Estendendo o virtualenv no `devel`
 
-Pacotes Python com extensões nativas que precisam compilar contra o GDAL da imagem (`fiona`, `rasterio` com `--no-binary`) são instalados no venv `/opt/geosgb/venv` do `devel`, e o venv inteiro é copiado para o `release`:
+Pacotes Python com extensões nativas que precisam compilar contra o GDAL da imagem (`fiona`, `rasterio` com `--no-binary`) são instalados no venv `/opt/geosgb/venv` do `devel`, e o venv inteiro é copiado para o `release-py`:
 
 ```dockerfile
 FROM docker.io/ndscprm/gdal:3.12.4-py3.12-devel AS build
@@ -317,9 +317,9 @@ COPY --from=build /opt/geosgb/venv /opt/geosgb/venv
 
 O exemplo completo, com verificação no build e os cuidados (o `COPY` substitui o venv inteiro; fixar versões), está em [examples/fiona](examples/fiona/).
 
-### Rodando no `nopy`
+### Rodando no `release-nopy`
 
-Um binário compilado no `devel` que não usa Python também roda no `nopy`, que tem o mesmo GDAL nos mesmos caminhos e é menor que o `release`:
+Um binário compilado no `devel` que não usa Python também roda no `release-nopy`, que tem o mesmo GDAL nos mesmos caminhos e é menor que o `release-py`:
 
 ```dockerfile
 FROM docker.io/ndscprm/gdal:3.12.4-py3.12-devel AS build
@@ -332,7 +332,7 @@ COPY --from=build /src/build/app /usr/local/bin/
 CMD ["app"]
 ```
 
-Use o `devel` e o `nopy` do mesmo build (a tag datada de um corresponde à do outro, ex.: `3.12.4-py3.12-20261026-devel` e `3.12.4-20261026-nopy`).
+Use o `devel` e o `release-nopy` do mesmo build (a tag datada de um corresponde à do outro, ex.: `3.12.4-py3.12-devel-20261026` e `3.12.4-nopy-20261026`).
 
 ### Depuração com gdb
 
@@ -347,7 +347,7 @@ gdb --args gdalinfo arquivo.tif
 (gdb) bt
 ```
 
-Para analisar um core dump gerado no `release`, abra-o no `devel` da mesma versão: os binários são os mesmos, só que com os símbolos.
+Para analisar um core dump gerado no `release-py`, abra-o no `devel` da mesma versão: os binários são os mesmos, só que com os símbolos.
 
 ## Versões e build args
 
@@ -362,7 +362,7 @@ Para analisar um core dump gerado no `release`, abra-o no `devel` da mesma vers�
 | numpy | `2.5.4` (versão usada para compilar os bindings; fixada com hash em [requirements/venv.txt](requirements/venv.txt), junto com pip, setuptools e wheel) |
 | Oracle Instant Client | `19.32.0.0.0` |
 
-Todos os downloads são verificados contra valores fixados no repositório: o SHA256 do GDAL, do Arrow, do Thrift e do Oracle no Dockerfile, e os hashes dos pacotes Python do venv em [requirements/venv.txt](requirements/venv.txt) (`pip install --require-hashes`). Para mudar a versão de um deles, é preciso atualizar também o hash correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md). As imagens base (`python` e, no `nopy`, `debian`) são referenciadas por tag, para que o rebuild semanal pegue as correções delas. O digest exato usado em cada build fica registrado no provenance.
+Todos os downloads são verificados contra valores fixados no repositório: o SHA256 do GDAL, do Arrow, do Thrift e do Oracle no Dockerfile, e os hashes dos pacotes Python do venv em [requirements/venv.txt](requirements/venv.txt) (`pip install --require-hashes`). Para mudar a versão de um deles, é preciso atualizar também o hash correspondente. O procedimento está no [CLAUDE.md](CLAUDE.md). As imagens base (`python` e, no `release-nopy`, `debian`) são referenciadas por tag, para que o rebuild semanal pegue as correções delas. O digest exato usado em cada build fica registrado no provenance.
 
 O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do repositório apt do Arrow, para que o Parquet use uma versão do Apache Thrift com as correções de segurança em dia. O Thrift do Debian trixie (0.19) tem CVEs abertos e sem previsão de correção. O Thrift fica embutido no `libparquet.so` (link estático), então não aparece como pacote na imagem.
 

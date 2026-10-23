@@ -1,5 +1,5 @@
 # fiona compilado contra o GDAL da imagem, estendendo o venv do devel
-# GDAL_TAG é usado nos dois estágios, então devel e release são sempre da mesma versão
+# GDAL_TAG é usado nos dois estágios, então devel e release-py são sempre da mesma versão
 ARG GDAL_IMAGE=docker.io/ndscprm/gdal
 ARG GDAL_TAG=3.12.4-py3.12
 
@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir --no-binary fiona "fiona==${FIONA_VERSION}" && \
     # garante que o fiona ficou ligado ao GDAL da imagem (falha o build se não ficou)
     python -c "import fiona; from osgeo import gdal; assert fiona.__gdal_version__ == gdal.__version__, fiona.__gdal_version__"
 
-# 2) Imagem final: release + venv estendido
+# 2) Imagem final: release-py + venv estendido
 FROM ${GDAL_IMAGE}:${GDAL_TAG}
 
 # substitui o venv inteiro: todo pip install que compila precisa estar no estágio build

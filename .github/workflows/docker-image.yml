@@ -52,7 +52,7 @@ jobs:
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
     # devel first (toolchain, headers, GDAL sources and debug symbols; Arrow and GDAL take most of the time);
-    # release reuses the devel stage from the same builder, so both come from the same GDAL build
+    # release-py and release-nopy reuse the devel stage from the same builder, so all come from the same GDAL build
     - name: Build and push devel image
       id: devel
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
@@ -70,10 +70,10 @@ jobs:
         sbom: true
         provenance: mode=max
 
-    # the release build goes through devel and staging, so its mode=max cache covers every stage
+    # the release-py build goes through devel and staging, so its mode=max cache covers every stage
     # (a cache-to on the devel step would only duplicate it in the 10 GB GHA cache)
-    - name: Build and push release image
-      id: release
+    - name: Build and push release-py image
+      id: release-py
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         context: .
@@ -82,19 +82,19 @@ jobs:
         # Always attempt to pull all referenced images
         pull: true
         outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-        target: release
+        target: release-py
         cache-from: type=gha,scope=${{ matrix.arch }}
         cache-to: type=gha,scope=${{ matrix.arch }},mode=max
-        # the release stage (apt-get install of the runtime packages) is always rebuilt, so every run gets
+        # the release-py stage (apt-get install of the runtime packages) is always rebuilt, so every run gets
         # the current Debian fixes even when the cached layers did not change; it takes a couple of minutes
-        no-cache-filters: release
+        no-cache-filters: release-py
         sbom: true
         provenance: mode=max
 
     # same GDAL runtime without Python (debian slim base, no venv); devel and staging come from the cache
-    # written by the release step, and the nopy stage is always rebuilt like release
-    - name: Build and push nopy image
-      id: nopy
+    # written by the release-py step, and the release-nopy stage is always rebuilt like release-py
+    - name: Build and push release-nopy image
+      id: release-nopy
       uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
       with:
         context: .
@@ -103,34 +103,34 @@ jobs:
         # Always attempt to pull all referenced images
         pull: true
         outputs: type=image,name=${{ env.IMAGE }},push-by-digest=true,name-canonical=true,push=true
-        target: nopy
+        target: release-nopy
         cache-from: type=gha,scope=${{ matrix.arch }}
-        no-cache-filters: nopy
+        no-cache-filters: release-nopy
         sbom: true
         provenance: mode=max
 
     # runs on the native runner of each architecture; a failure here stops the scan and merge jobs,
     # so no tag is created for a broken image
-    - name: Smoke test devel, release and nopy images
+    - name: Smoke test devel, release-py and release-nopy images
       env:
         DEVEL_DIGEST: ${{ steps.devel.outputs.digest }}
-        RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
-        NOPY_DIGEST: ${{ steps.nopy.outputs.digest }}
+        RELEASE_PY_DIGEST: ${{ steps.release-py.outputs.digest }}
+        RELEASE_NOPY_DIGEST: ${{ steps.release-nopy.outputs.digest }}
       run: |
-        sh .github/scripts/smoke-test.sh "${IMAGE}@${RELEASE_DIGEST}"
+        sh .github/scripts/smoke-test.sh "${IMAGE}@${RELEASE_PY_DIGEST}"
         sh .github/scripts/smoke-test.sh "${IMAGE}@${DEVEL_DIGEST}"
-        sh .github/scripts/smoke-test.sh "${IMAGE}@${NOPY_DIGEST}" nopy
+        sh .github/scripts/smoke-test.sh "${IMAGE}@${RELEASE_NOPY_DIGEST}" release-nopy
 
     - name: Export digests
       env:
         DEVEL_DIGEST: ${{ steps.devel.outputs.digest }}
-        RELEASE_DIGEST: ${{ steps.release.outputs.digest }}
-        NOPY_DIGEST: ${{ steps.nopy.outputs.digest }}
+        RELEASE_PY_DIGEST: ${{ steps.release-py.outputs.digest }}
+        RELEASE_NOPY_DIGEST: ${{ steps.release-nopy.outputs.digest }}
       run: |
-        mkdir -p "${{ runner.temp }}/digests/devel" "${{ runner.temp }}/digests/release" "${{ runner.temp }}/digests/nopy"
+        mkdir -p "${{ runner.temp }}/digests/devel" "${{ runner.temp }}/digests/release-py" "${{ runner.temp }}/digests/release-nopy"
         touch "${{ runner.temp }}/digests/devel/${DEVEL_DIGEST#sha256:}"
-        touch "${{ runner.temp }}/digests/release/${RELEASE_DIGEST#sha256:}"
-        touch "${{ runner.temp }}/digests/nopy/${NOPY_DIGEST#sha256:}"
+        touch "${{ runner.temp }}/digests/release-py/${RELEASE_PY_DIGEST#sha256:}"
+        touch "${{ runner.temp }}/digests/release-nopy/${RELEASE_NOPY_DIGEST#sha256:}"
 
     - name: Upload digests
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -140,7 +140,7 @@ jobs:
         if-no-files-found: error
         retention-days: 1
 
-  # Scans the release and nopy images of each architecture before any tag exists. Gate: a Critical vulnerability
+  # Scans the release-py and release-nopy images of each architecture before any tag exists. Gate: a Critical vulnerability
   # with an available fix that is not covered by vex/gdal-oci.openvex.json fails the job, so merge does not run.
   # Everything else (High, unfixed Debian CVEs) only goes to code scanning.
   scan:
@@ -149,10 +149,11 @@ jobs:
       fail-fast: false
       matrix:
         arch: [amd64, arm64]
-        variant: [release, nopy]
+        variant: [release-py, release-nopy]
     env:
-      # SARIF categories: docker-scout-<arch> / grype-<arch> for release (unchanged), ...-nopy-<arch> for nopy
-      CATEGORY_SUFFIX: ${{ matrix.variant == 'nopy' && 'nopy-' || '' }}${{ matrix.arch }}
+      # SARIF categories: docker-scout-<arch> / grype-<arch> for release-py (unchanged, keeps the code scanning history),
+      # ...-nopy-<arch> for release-nopy
+      CATEGORY_SUFFIX: ${{ matrix.variant == 'release-nopy' && 'nopy-' || '' }}${{ matrix.arch }}
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -237,7 +238,7 @@ jobs:
         output-format: table
 
   # Creates the multi-platform tags: <GDAL_VERSION>-py<PYTHON_VERSION>[-devel] and <GDAL_VERSION>-nopy (moving,
-  # always the latest build) and the dated ones with -<YYYYMMDD> before the suffix (one per build, never overwritten)
+  # always the latest build) and the dated ones, <moving tag>-<YYYYMMDD> (one per build, never overwritten)
   merge:
     needs: [build, scan]
     runs-on: ubuntu-24.04
@@ -255,9 +256,9 @@ jobs:
         PYTHON_VERSION=$(sed -n 's/^ARG PYTHON_VERSION=//p' Dockerfile)
         test -n "$GDAL_VERSION" && test -n "$PYTHON_VERSION"
         TAG="${GDAL_VERSION}-py${PYTHON_VERSION}"
-        echo "release=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+        echo "release_py=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
         echo "devel=${IMAGE}:${TAG}-devel" >> "$GITHUB_OUTPUT"
-        echo "nopy_base=${IMAGE}:${GDAL_VERSION}" >> "$GITHUB_OUTPUT"
+        echo "release_nopy=${IMAGE}:${GDAL_VERSION}-nopy" >> "$GITHUB_OUTPUT"
 
     - name: Download digests
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -278,33 +279,27 @@ jobs:
     - name: Create multi-platform tags
       env:
         DEVEL_TAG: ${{ steps.meta.outputs.devel }}
-        RELEASE_TAG: ${{ steps.meta.outputs.release }}
-        # <GDAL_VERSION>, without -nopy: the suffix goes after the date, like -devel
-        NOPY_BASE: ${{ steps.meta.outputs.nopy_base }}
+        RELEASE_PY_TAG: ${{ steps.meta.outputs.release_py }}
+        RELEASE_NOPY_TAG: ${{ steps.meta.outputs.release_nopy }}
       working-directory: ${{ runner.temp }}/digests
       run: |
         # dated tag, never overwritten: a second build on the same day gets .2, .3, ...
         STAMP=$(date -u +%Y%m%d)
         suffix=$STAMP
         n=1
-        while docker buildx imagetools inspect "${RELEASE_TAG}-${suffix}" > /dev/null 2>&1; do
+        while docker buildx imagetools inspect "${RELEASE_PY_TAG}-${suffix}" > /dev/null 2>&1; do
           n=$((n + 1))
           suffix="${STAMP}.${n}"
         done
-        for variant in devel release nopy; do
+        for variant in devel release-py release-nopy; do
           case "$variant" in
-            devel)
-              tag=$DEVEL_TAG
-              dated="${RELEASE_TAG}-${suffix}-devel" ;;
-            release)
-              tag=$RELEASE_TAG
-              dated="${RELEASE_TAG}-${suffix}" ;;
-            nopy)
-              tag="${NOPY_BASE}-nopy"
-              dated="${NOPY_BASE}-${suffix}-nopy" ;;
+            devel) tag=$DEVEL_TAG ;;
+            release-py) tag=$RELEASE_PY_TAG ;;
+            release-nopy) tag=$RELEASE_NOPY_TAG ;;
           esac
+          dated="${tag}-${suffix}"
           # shellcheck disable=SC2046
           docker buildx imagetools create -t "$tag" -t "$dated" $(printf "${IMAGE}@sha256:%s " $(ls "$variant"))
           docker buildx imagetools inspect "$dated"
         done
-        echo "Tags datadas: \`${RELEASE_TAG}-${suffix}\`, \`${RELEASE_TAG}-${suffix}-devel\` e \`${NOPY_BASE}-${suffix}-nopy\`" >> "$GITHUB_STEP_SUMMARY"
+        echo "Tags datadas: \`${RELEASE_PY_TAG}-${suffix}\`, \`${DEVEL_TAG}-${suffix}\` e \`${RELEASE_NOPY_TAG}-${suffix}\`" >> "$GITHUB_STEP_SUMMARY"

@@ -1,6 +1,6 @@
 # Exemplo: GeoDjango com PostGIS
 
-Uma aplicação Django 5.2 LTS com `django.contrib.gis` sobre o `release` (`docker.io/ndscprm/gdal:3.12.4-py3.12`), usando PostGIS como banco. Não é preciso compilar nada: o GeoDjango carrega o **GDAL da imagem** e o **GEOS do Debian** via ctypes. A importação de dados aceita qualquer formato que o GDAL da imagem lê.
+Uma aplicação Django 5.2 LTS com `django.contrib.gis` sobre o `release-py` (`docker.io/ndscprm/gdal:3.12.4-py3.12`), usando PostGIS como banco. Não é preciso compilar nada: o GeoDjango carrega o **GDAL da imagem** e o **GEOS do Debian** via ctypes. A importação de dados aceita qualquer formato que o GDAL da imagem lê.
 
 ## Arquivos
 
@@ -66,6 +66,6 @@ Build args do Dockerfile:
 | Arg | Padrão | Descrição |
 |---|---|---|
 | `GDAL_IMAGE` | `docker.io/ndscprm/gdal` | Repositório da imagem base |
-| `GDAL_TAG` | `3.12.4-py3.12` | Tag do `release` |
+| `GDAL_TAG` | `3.12.4-py3.12` | Tag do `release-py` |
 
 O `compose.yaml` repassa as variáveis de ambiente `GDAL_IMAGE` e `GDAL_TAG` para esses build args.

@@ -61,7 +61,7 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
     unzip -d "${ORACLE_INSTANTCLIENT_DIR}" oracle.zip && \
     unzip -od "${ORACLE_INSTANTCLIENT_DIR}" oracle-sdk.zip && \
     rm oracle.zip oracle-sdk.zip && \
-    # Oracle client looks for libaio.so.1 (Debian trixie ships libaio.so.1t64); the release stage recreates it
+    # Oracle client looks for libaio.so.1 (Debian trixie ships libaio.so.1t64); the release stages recreate it
     ARCH=$(uname -m) && \
     ln -s "$(find "/usr/lib/$ARCH-linux-gnu" -name 'libaio.so.1*' -type f -print -quit)" "/usr/lib/$ARCH-linux-gnu/libaio.so.1" && \
     CLIENT_DIR=$(find "${ORACLE_INSTANTCLIENT_DIR}" -name 'instantclient*' -type d -print -quit) && \
@@ -327,7 +327,7 @@ CMD ["python3"]
 SHELL ["/bin/sh", "-c"]
 
 
-# Prepare ${BASE_DIR} for release: drop build-only files, strip debug symbols
+# Prepare ${BASE_DIR} for release-py and release-nopy: drop build-only files, strip debug symbols
 # and resolve the Debian runtime packages needed by the GDAL binaries
 FROM devel AS staging
 
@@ -354,7 +354,7 @@ RUN GDAL_ELF_DIRS=("${BASE_DIR}/bin" "${BASE_DIR}/lib" ${BASE_DIR}/venv/lib/pyth
 
 
 # ${BASE_DIR} without the venv (Python bindings, numpy and the Python utilities such as gdal_calc.py),
-# for the nopy image; removed in its own stage so the files never reach a layer of nopy
+# for release-nopy; removed in its own stage so the files never reach a layer of release-nopy
 FROM staging AS staging-nopy
 
 ARG BASE_DIR
@@ -362,17 +362,17 @@ ARG BASE_DIR
 RUN rm -rf "${BASE_DIR}/venv"
 
 
-# Same GDAL runtime as release, without Python: debian slim base and no venv. Defined before release,
+# Same GDAL runtime as release-py, without Python: debian slim base and no venv. Defined before release-py,
 # which stays the last stage (default target)
-FROM debian:${DEBIAN_VERSION}-slim AS nopy
+FROM debian:${DEBIAN_VERSION}-slim AS release-nopy
 
 ARG BASE_DIR
 
 COPY --from=staging /etc/ld.so.conf.d/oracle.conf /etc/ld.so.conf.d/geosgb.conf /etc/ld.so.conf.d/
 
-# same runtime packages as release; the python slim image brings ca-certificates, netbase and tzdata,
+# same runtime packages as release-py; the python slim image brings ca-certificates, netbase and tzdata,
 # which ldd does not list (data, not linked libraries) and GDAL needs for HTTPS (cURL), services and time zones.
-# This stage is never cached in CI (no-cache-filters: nopy), so every build gets the current Debian fixes
+# This stage is never cached in CI (no-cache-filters: release-nopy), so every build gets the current Debian fixes
 RUN --mount=type=bind,from=staging,source=/tmp/runtime-packages.txt,target=/tmp/runtime-packages.txt \
     apt-get -y update && \
     DEBIAN_FRONTEND=noninteractive apt-get -y upgrade && \
@@ -394,7 +394,7 @@ RUN ARCH=$(uname -m) && \
 ENV GDAL_DATA=${BASE_DIR}/share/gdal \
     PATH=${BASE_DIR}/bin:$PATH
 
-# same entrypoint as devel and release (COPY --from keeps the modes set there)
+# same entrypoint as devel and release-py (COPY --from keeps the modes set there)
 COPY --from=staging /docker-entrypoint.sh /docker-entrypoint.sh
 COPY --from=staging /docker-entrypoint.d /docker-entrypoint.d
 
@@ -404,14 +404,14 @@ ENTRYPOINT ["/docker-entrypoint.sh"]
 CMD ["bash"]
 
 
-FROM python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION} AS release
+FROM python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION} AS release-py
 
 ARG BASE_DIR
 
 COPY --from=staging /etc/ld.so.conf.d/oracle.conf /etc/ld.so.conf.d/geosgb.conf /etc/ld.so.conf.d/
 
 # upgrade applies the Debian fixes released after the python base image was built; this stage is never
-# cached in CI (no-cache-filters: release), so every build gets them
+# cached in CI (no-cache-filters: release-py), so every build gets them
 RUN --mount=type=bind,from=staging,source=/tmp/runtime-packages.txt,target=/tmp/runtime-packages.txt \
     apt-get -y update && \
     DEBIAN_FRONTEND=noninteractive apt-get -y upgrade && \

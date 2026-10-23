@@ -7,7 +7,7 @@ Pendências das análises de segurança de outubro de 2026. Os itens resolvidos 
 ### Rodar como usuário não root
 As imagens não definem `USER`, então rodam como root, e as imagens derivadas herdam isso. O exemplo [examples/django](examples/django/) só roda sem root porque o `compose.yaml` define `user: "12345:0"`; o Dockerfile dele não define `USER`.
 
-- Criar no `release` um usuário fixo (ex.: `sgb`, UID 1000, GID 0), sem mudar para ele, para não quebrar imagens derivadas que fazem `pip install` ou `apt-get` no build.
+- Criar no `release-py` um usuário fixo (ex.: `sgb`, UID 1000, GID 0), sem mudar para ele, para não quebrar imagens derivadas que fazem `pip install` ou `apt-get` no build.
 - Documentar no README que a imagem derivada deve terminar com `USER 1000` (ou outro UID sem privilégios).
 - Colocar `USER` nos Dockerfiles de [examples/](examples/), para servirem de modelo.
 - O nss_wrapper continua necessário para UID arbitrário (OpenShift); com um usuário que existe no `/etc/passwd`, ele não entra em ação.
@@ -24,14 +24,14 @@ No job `merge`, o laço que escolhe o sufixo da tag datada (`<AAAAMMDD>`, `.2`, 
 
 ## Prioridade baixa
 
-### Binários setuid no `release`
+### Binários setuid no `release-py`
 A `python:slim` traz 11 binários setuid/setgid (`su`, `mount`, `umount`, `passwd`, `chsh`, `chfn`, `newgrp`, `gpasswd`, `chage`, `expiry`, `unix_chkpwd`). Rodando como root não fazem diferença, mas com UID sem privilégios são caminho de escalada.
 
-- Remover os bits no `release`: `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`.
+- Remover os bits no `release-py`: `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`.
 - Alternativa ou complemento: recomendar `--security-opt no-new-privileges` no README.
 
 ### Imagem `devel` fora do scan
-O job `scan` verifica só o `release`. O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.
+O job `scan` verifica só o `release-py`. O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.
 
 - Escanear também o `devel`, só como relatório (sem gate), ou com o mesmo gate.
 

@@ -1,4 +1,4 @@
-# GeoDjango sobre a imagem release do GDAL (sem compilação: Django usa o GDAL e o GEOS via ctypes)
+# GeoDjango sobre a imagem release-py do GDAL (sem compilação: Django usa o GDAL e o GEOS via ctypes)
 ARG GDAL_IMAGE=docker.io/ndscprm/gdal
 ARG GDAL_TAG=3.12.4-py3.12
 
