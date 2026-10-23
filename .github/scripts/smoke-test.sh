@@ -1,9 +1,12 @@
 #!/bin/sh
-# Smoke test de uma imagem (release ou devel): versões, drivers, bindings Python e UID arbitrário.
-# Uso: .github/scripts/smoke-test.sh <imagem>   (ex.: docker.io/ndscprm/gdal:3.12.4-py3.12)
+# Smoke test de uma imagem (release, devel ou nopy): versões, drivers, bindings Python e UID arbitrário.
+# Uso: .github/scripts/smoke-test.sh <imagem> [nopy]   (ex.: docker.io/ndscprm/gdal:3.12.4-py3.12)
+# Com "nopy" (imagem sem Python), as verificações do venv viram verificações de que o Python não existe.
 set -eu
 
-IMAGE=${1:?uso: $0 <imagem>}
+IMAGE=${1:?uso: $0 <imagem> [nopy]}
+VARIANT=${2:-}
+case "$VARIANT" in "" | nopy) ;; *) echo "variante inválida: $VARIANT (use nopy ou nada)" >&2; exit 1 ;; esac
 
 run() {
     docker run --rm -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" "$@"
@@ -15,7 +18,11 @@ VECTOR_DRIVERS="OCI PostgreSQL PGDUMP SQLite GPKG OpenFileGDB Parquet Arrow KML 
 
 echo "## versões"
 run gdalinfo --version
-run python -c "import numpy; from osgeo import gdal, gdal_array; print('osgeo', gdal.__version__, '| numpy', numpy.__version__)"
+if [ "$VARIANT" != nopy ]; then
+    run python -c "import numpy; from osgeo import gdal, gdal_array; print('osgeo', gdal.__version__, '| numpy', numpy.__version__)"
+fi
+# certificados das CAs (cURL: HTTPS, serviços OGC, /vsicurl/); na imagem python vêm da base, na nopy são instalados
+run test -s /etc/ssl/certs/ca-certificates.crt
 
 missing=""
 raster=$(run gdalinfo --formats)
@@ -59,6 +66,13 @@ run sh -c '
     ! dpkg-query -W -f "\${Status}\n" "libthrift*" 2> /dev/null | grep -q "ok installed"'
 echo "## Parquet ok"
 
+if [ "$VARIANT" = nopy ]; then
+    echo "## sem Python (nem venv, nem /usr/local/bin/python3)"
+    run sh -c '
+        ! command -v python3 && ! command -v python && test ! -e /opt/geosgb/venv && test ! -e /usr/local/bin/python3' \
+        || { echo "Python encontrado na imagem nopy" >&2; exit 1; }
+    echo "## sem Python ok"
+else
 echo "## venv: versões fixadas em requirements/venv.txt"
 # shellcheck disable=SC2046
 run python -c '
@@ -76,6 +90,7 @@ run sh -c '
     # ensurepip continua disponível para imagens derivadas criarem venvs
     /usr/local/bin/python3 -m venv /tmp/v && /tmp/v/bin/pip --version > /dev/null'
 echo "## pip ok"
+fi
 
 echo "## proteções de compilação (HARDENING_CFLAGS/LDFLAGS)"
 # só no devel, que tem readelf; os binários do release são os mesmos, sem os símbolos de debug
@@ -90,14 +105,17 @@ run sh -c '
     echo "ok"'
 
 echo "## SBOM dos componentes fora do apt (/opt/geosgb/share/sbom)"
-run python -c '
-import glob, json
-from osgeo import gdal
-comps = {c["name"]: c["version"] for f in glob.glob("/opt/geosgb/share/sbom/*.cdx.json") for c in json.load(open(f))["components"]}
-missing = {"gdal", "arrow", "thrift", "xsimd", "simdjson", "oracle-instantclient"} - comps.keys()
-assert not missing, missing
-assert comps["gdal"] == gdal.__version__, comps["gdal"]
-print(", ".join(f"{n} {v}" for n, v in sorted(comps.items())))'
+# em sh, sem Python (vale para a nopy); sbom/cyclonedx.py grava "name" e logo abaixo "version"
+run sh -c '
+    set -e
+    cat /opt/geosgb/share/sbom/*.cdx.json > /tmp/sbom.json
+    for n in gdal arrow thrift xsimd simdjson oracle-instantclient; do
+        grep -q "\"name\": \"$n\"" /tmp/sbom.json || { echo "SBOM sem $n" >&2; exit 1; }
+    done
+    v=$(gdalinfo --version | sed -n "s/^GDAL \([^ ,]*\).*/\1/p")
+    grep -A1 "\"name\": \"gdal\"" /tmp/sbom.json | grep -q "\"version\": \"$v\"" \
+        || { echo "versão do GDAL no SBOM diferente de $v" >&2; exit 1; }
+    grep -A1 "\"name\":" /tmp/sbom.json | sed -n "s/.*\"\(name\|version\)\": \"\([^\"]*\)\".*/\2/p" | paste -sd " " -'
 echo "## SBOM ok"
 
 echo "## UID arbitrário (nss_wrapper)"

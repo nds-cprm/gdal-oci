@@ -353,6 +353,57 @@ RUN GDAL_ELF_DIRS=("${BASE_DIR}/bin" "${BASE_DIR}/lib" ${BASE_DIR}/venv/lib/pyth
     test -s /tmp/runtime-packages.txt
 
 
+# ${BASE_DIR} without the venv (Python bindings, numpy and the Python utilities such as gdal_calc.py),
+# for the nopy image; removed in its own stage so the files never reach a layer of nopy
+FROM staging AS staging-nopy
+
+ARG BASE_DIR
+
+RUN rm -rf "${BASE_DIR}/venv"
+
+
+# Same GDAL runtime as release, without Python: debian slim base and no venv. Defined before release,
+# which stays the last stage (default target)
+FROM debian:${DEBIAN_VERSION}-slim AS nopy
+
+ARG BASE_DIR
+
+COPY --from=staging /etc/ld.so.conf.d/oracle.conf /etc/ld.so.conf.d/geosgb.conf /etc/ld.so.conf.d/
+
+# same runtime packages as release; the python slim image brings ca-certificates, netbase and tzdata,
+# which ldd does not list (data, not linked libraries) and GDAL needs for HTTPS (cURL), services and time zones.
+# This stage is never cached in CI (no-cache-filters: nopy), so every build gets the current Debian fixes
+RUN --mount=type=bind,from=staging,source=/tmp/runtime-packages.txt,target=/tmp/runtime-packages.txt \
+    apt-get -y update && \
+    DEBIAN_FRONTEND=noninteractive apt-get -y upgrade && \
+    xargs -a /tmp/runtime-packages.txt \
+        apt-get install -y --no-install-recommends --no-install-suggests && \
+    # nss_wrapper is preloaded by the entrypoint, not linked by GDAL, so ldd does not list it
+    apt-get install -y --no-install-recommends --no-install-suggests \
+        ca-certificates netbase tzdata libnss-wrapper && \
+    apt-get -y autoremove && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=staging-nopy ${BASE_DIR} ${BASE_DIR}
+
+# Oracle client looks for libaio.so.1 (Debian trixie ships libaio.so.1t64)
+RUN ARCH=$(uname -m) && \
+    ln -s "$(find "/usr/lib/$ARCH-linux-gnu" -name 'libaio.so.1*' -type f -print -quit)" "/usr/lib/$ARCH-linux-gnu/libaio.so.1" && \
+    ldconfig
+
+ENV GDAL_DATA=${BASE_DIR}/share/gdal \
+    PATH=${BASE_DIR}/bin:$PATH
+
+# same entrypoint as devel and release (COPY --from keeps the modes set there)
+COPY --from=staging /docker-entrypoint.sh /docker-entrypoint.sh
+COPY --from=staging /docker-entrypoint.d /docker-entrypoint.d
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
+
+# setting ENTRYPOINT resets the CMD inherited from the debian image
+CMD ["bash"]
+
+
 FROM python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION} AS release
 
 ARG BASE_DIR
