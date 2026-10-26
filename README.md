@@ -205,7 +205,7 @@ ENTRYPOINT ["/docker-entrypoint.sh", "meu-entrypoint.sh"]
 As três imagens já incluem o script [`10-enable-nss-wrapper.sh`](docker-entrypoint.d/10-enable-nss-wrapper.sh). Quando o container roda com um UID que não existe no `/etc/passwd` (como no OpenShift ou com `docker run --user 12345:0`), ele usa o `nss_wrapper` para:
 
 - criar um usuário virtual com o nome de `USER_NAME` (padrão `sgb`), para que `whoami`, `getpass.getuser()` e bibliotecas que consultam o passwd funcionem. O nome deve começar por letra ou `_` e ter só letras, dígitos, `.`, `_` ou `-` (até 32 caracteres). Um valor inválido impede o container de iniciar;
-- definir `HOME=/tmp` quando o `HOME` herdado for `/` ou não for gravável.
+- definir `HOME=/tmp` quando o `HOME` herdado estiver vazio ou for `/` (o Docker usa `/` para UID sem passwd). Qualquer outro `HOME` é mantido, mesmo sem permissão de escrita: imagens derivadas usam o `HOME` como diretório de configuração, e com `--read-only` ele não é gravável.
 
 Rodando como root ou com um usuário que já existe na imagem, o script não faz nada. Se a imagem derivada criar o próprio usuário (`useradd` + `USER`), o nss_wrapper também não entra em ação.
 
@@ -235,7 +235,7 @@ volumes:
 ```
 
 - `TMPDIR` também é aceito (o diretório temporário vira `$TMPDIR`). Não aponte para um volume persistente, porque cada start deixa ali um diretório `nss_wrapper.*`.
-- Um volume montado no `HOME` precisa ser gravável pelo UID do container. Se não for, o script troca o `HOME` para `/tmp` sem erro, e o que for gravado ali se perde quando o container termina. Um volume nomeado novo do Docker nasce sem escrita para outros UIDs: no primeiro uso, ele copia a permissão do diretório que existe na imagem naquele caminho (`/root` é 0700). Se o caminho não existir na imagem, como `/home/app`, o volume é criado como `root` com 0755. Por isso o exemplo acima faz o `chmod 0775` antes. No Kubernetes/OpenShift, use `fsGroup` no `securityContext` do pod (a SCC padrão do OpenShift já atribui um).
+- Um volume montado no `HOME` precisa ser gravável pelo UID do container. Se não for, o script não percebe e mantém o `HOME`, e o erro só aparece quando a aplicação tentar gravar ali. Um volume nomeado novo do Docker nasce sem escrita para outros UIDs: no primeiro uso, ele copia a permissão do diretório que existe na imagem naquele caminho (`/root` é 0700). Se o caminho não existir na imagem, como `/home/app`, o volume é criado como `root` com 0755. Por isso o exemplo acima faz o `chmod 0775` antes. No Kubernetes/OpenShift, use `fsGroup` no `securityContext` do pod (a SCC padrão do OpenShift já atribui um).
 - Rodando como root, não há essa exigência: o nss_wrapper não entra em ação.
 
 ### Variáveis de ambiente

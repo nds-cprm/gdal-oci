@@ -9,7 +9,8 @@ USER_NAME=${USER_NAME:-sgb}
 # Se o UID atual não existir no /etc/passwd do container
 if [ "$USER_ID" != "0" ] && ! getent passwd "$USER_ID" >/dev/null 2>&1; then
 
-    # O Docker define HOME=/ quando o UID não existe no passwd; /tmp passa a ser padrão
+    # O Docker define HOME=/ quando o UID não existe no passwd; /tmp passa a ser padrão.
+    # Um HOME não gravável é mantido: com --read-only ele nunca é, e imagens derivadas guardam a configuração nele
     if [ -z "${HOME:-}" ] || [ "$HOME" = "/" ]; then
         export HOME=/tmp
     fi
