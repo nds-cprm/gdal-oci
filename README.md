@@ -427,7 +427,7 @@ jobs:
       variants: |
         [
           {"name": "devel", "target": "build", "tag": "{version}-devel",
-           "test": "docker run --rm \"$IMAGE_REF\" mapserv -v | grep SUPPORTS=FASTCGI"},
+           "test": "sh .github/scripts/devel-test.sh \"$IMAGE_REF\""},
           {"name": "release", "target": "release", "tag": "{version}", "scan": true, "cache-to": true,
            "test": "sh .github/scripts/smoke-test.sh \"$IMAGE_REF\""}
         ]
@@ -463,6 +463,57 @@ Campos de cada variante:
 | `test` | Comando `bash` (`-euo pipefail`) rodado no runner depois do build, no checkout do repositório que chamou, com `IMAGE_REF` (a imagem por digest, ou `<image>:ci-<variante>-<arch>` com `push: false`), `VARIANT` e `ARCH` definidos |
 
 O cache do GHA e os artifacts de digests levam o nome da imagem (`<nome>-<arch>`), então um repositório pode chamar o workflow para mais de uma imagem. As actions são fixadas por SHA de commit e atualizadas pelo Dependabot deste repositório. Uma mudança no workflow vale para todos os projetos que o chamam pelo mesmo `ref`: verifique-os antes de publicá-la.
+
+## Rebuild das imagens derivadas
+
+As imagens derivadas (mapserver-oci, mapproxy-oci e pygeoapi-oci) não têm build agendado próprio. Quem as reconstrói é o CI deste repositório: depois que o job `merge` publica as tags novas da `ndscprm/gdal`, o job `dispatch` do [docker-image.yml](.github/workflows/docker-image.yml) dispara o `docker-image.yml` de cada uma (`workflow_dispatch` no branch `main`). Uma base nova invalida todas as camadas, então cada imagem derivada é reconstruída por inteiro, com os pacotes atuais do Debian e do PyPI.
+
+- O disparo só acontece se a base foi publicada. Se o build, o smoke test ou o gate de vulnerabilidades da base falhar, nenhuma tag é criada e as derivadas não são disparadas.
+- No rebuild semanal (`schedule`), o disparo é sempre feito. No disparo manual, depende da opção **dispatch-derived** (marcada por padrão); desmarque-a para testar a base sem reconstruir as derivadas.
+- O `GITHUB_TOKEN` não dispara workflows de outros repositórios. Cada job do `dispatch` gera um token de curta duração de um **GitHub App da organização**, restrito ao repositório que vai disparar e à permissão *Actions: write*, e o revoga no fim do job.
+
+### Cadastrando o GitHub App
+
+Feito uma vez, por um owner da organização `nds-cprm`.
+
+1. **Crie o App.** Em *Organization settings → Developer settings → GitHub Apps → New GitHub App*:
+   - **GitHub App name**: por exemplo, `gdal-oci-dispatch` (precisa ser único no GitHub);
+   - **Homepage URL**: a URL deste repositório;
+   - **Webhook**: desmarque *Active* (o App não recebe eventos);
+   - **Repository permissions**: só **Actions: Read and write** (*Metadata: Read-only* é marcada automaticamente). Nenhuma permissão de organização ou de conta;
+   - **Where can this GitHub App be installed?**: *Only on this account*.
+2. **Anote o Client ID e gere a chave.** Na página do App (*General*), copie o **Client ID** (começa com `Iv`) e, em *Private keys*, clique em *Generate a private key*. O navegador baixa um arquivo `.pem`.
+3. **Instale o App nos repositórios derivados.** Em *Install App*, instale na organização com *Only select repositories*: `mapserver-oci`, `mapproxy-oci` e `pygeoapi-oci`. O `gdal-oci` não precisa estar na lista: o token é usado nos outros repositórios.
+4. **Configure este repositório.** Em *Settings → Secrets and variables → Actions* do `gdal-oci`:
+   - aba *Variables*: variável `DERIVED_IMAGES_APP_CLIENT_ID` com o Client ID. É uma variável, não um secret, porque não é sigilosa e o workflow a lê num `if`;
+   - aba *Secrets*: secret `DERIVED_IMAGES_APP_PRIVATE_KEY` com o conteúdo inteiro do `.pem`, incluindo as linhas `-----BEGIN` e `-----END`.
+
+   Os dois também podem ser definidos na organização, com acesso restrito ao `gdal-oci`. Depois de cadastrar a chave, apague o `.pem` baixado.
+
+Sem a variável `DERIVED_IMAGES_APP_CLIENT_ID`, o job `dispatch` só emite um aviso e não falha, e as imagens derivadas ficam sem rebuild automático.
+
+### Testando
+
+Dispare o workflow em *Actions → Docker Image CI → Run workflow*, com **dispatch-derived** marcada. O build completo da base roda antes; ao final, o job `dispatch` lista no resumo os repositórios disparados, e cada um aparece em execução na aba *Actions* do repositório derivado, com o evento `workflow_dispatch`.
+
+### Manutenção
+
+- **Nova imagem derivada**: acrescente o repositório à matriz `repository` do job `dispatch` e inclua-o na instalação do App (*Organization settings → GitHub Apps → gdal-oci-dispatch → Configure → Repository access*). O repositório precisa ter um `.github/workflows/docker-image.yml` com `workflow_dispatch` no branch `main`.
+- **Troca da chave**: gere uma chave nova na página do App, substitua o secret `DERIVED_IMAGES_APP_PRIVATE_KEY` e depois apague a chave antiga no App. A chave não expira; troque-a se houver suspeita de vazamento.
+- **Desativar o disparo**: apague a variável `DERIVED_IMAGES_APP_CLIENT_ID` (o job passa a só emitir o aviso) ou suspenda a instalação do App.
+
+### Quando o `dispatch` falha
+
+Ele roda depois das tags da base já publicadas, então uma falha não afeta a `ndscprm/gdal`. A mensagem do passo indica a causa:
+
+| Sintoma | Causa provável |
+|---|---|
+| Falha em *Create a GitHub App token*, com erro de chave ou de autenticação | Secret `DERIVED_IMAGES_APP_PRIVATE_KEY` ausente, incompleto ou de outro App, ou Client ID errado |
+| Falha em *Create a GitHub App token*, com repositório não encontrado ou sem acesso | App não instalado naquele repositório |
+| Falha em *Start the CI*, com `HTTP 403` | App sem a permissão *Actions: Read and write*, ou permissão alterada e ainda não aprovada na instalação |
+| Falha em *Start the CI*, com `HTTP 404` ou workflow não encontrado | Repositório sem `.github/workflows/docker-image.yml`, ou o workflow sem `workflow_dispatch` no `main` |
+
+Para repetir só o disparo, use *Re-run failed jobs* na execução do gdal-oci: o build da base não é refeito.
 
 ## Licença
 
