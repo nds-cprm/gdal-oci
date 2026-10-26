@@ -2,6 +2,11 @@ name: Docker Image CI
 
 on:
   workflow_dispatch:
+    inputs:
+      dispatch-derived:
+        description: After publishing the tags, start the CI of the derived images (dispatch job)
+        type: boolean
+        default: true
   # weekly rebuild, so the images pick up the Debian/Python fixes of the base images
   # (scheduled runs only happen on the default branch)
   schedule:
@@ -303,3 +308,30 @@ jobs:
           docker buildx imagetools inspect "$dated"
         done
         echo "Tags datadas: \`${RELEASE_PY_TAG}-${suffix}\`, \`${DEVEL_TAG}-${suffix}\` e \`${RELEASE_NOPY_TAG}-${suffix}\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Starts the CI (docker-image.yml, workflow_dispatch) of the images built on ndscprm/gdal, now that the
+  # moving tags point to the new build. The GITHUB_TOKEN cannot start workflows in other repositories:
+  # DERIVED_IMAGES_TOKEN is a fine-grained token (or GitHub App token) with "Actions: read and write" on
+  # those repositories only. Without it the job only warns, so the base image publication is not affected
+  dispatch:
+    needs: merge
+    if: github.event_name == 'schedule' || inputs.dispatch-derived
+    strategy:
+      fail-fast: false
+      matrix:
+        repository: [mapserver-oci, mapproxy-oci, pygeoapi-oci]
+    runs-on: ubuntu-24.04
+    # nothing of the GITHUB_TOKEN is used
+    permissions: {}
+    steps:
+    - name: Start the CI of ${{ matrix.repository }}
+      env:
+        GH_TOKEN: ${{ secrets.DERIVED_IMAGES_TOKEN }}
+        REPOSITORY: ${{ github.repository_owner }}/${{ matrix.repository }}
+      run: |
+        if [ -z "$GH_TOKEN" ]; then
+          echo "::warning::DERIVED_IMAGES_TOKEN is not set: ${REPOSITORY} was not started"
+          exit 0
+        fi
+        gh workflow run docker-image.yml --repo "$REPOSITORY" --ref main
+        echo "CI de \`${REPOSITORY}\` disparado" >> "$GITHUB_STEP_SUMMARY"
