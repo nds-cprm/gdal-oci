@@ -225,24 +225,24 @@ ARG GDAL_VERSION=3.12.4
 # SHA256 of gdal-${GDAL_VERSION}.tar.gz, taken from a tarball whose .sig was verified against the
 # GPG key published in GDAL's docs (doc/source/download.rst, fingerprint 7B130E955B44D87CCE2765F0DBD81FF52EC2A42A)
 ARG GDAL_SHA256=68844ae29557b7efae4292c3b4cb3a3b8a79d14b765b89c5a7b17cbae7fa715a
-# Release (default, also the published devel): -O3, no debug symbols, no source tree in the image.
-# RelWithDebInfo: the same -O3 code plus debug symbols, with the source tree kept in ${BASE_DIR}/src, for a
-# devel built locally to debug GDAL (the release stages are stripped anyway, so their binaries are the same)
+# Release (default, also the published devel): -O3, no debug symbols. RelWithDebInfo: the same -O3 code plus
+# debug symbols, for a devel built locally to debug GDAL (the release stages are stripped anyway, so their
+# binaries are the same). The source tree stays in the devel either way
 ARG GDAL_BUILD_TYPE=Release
 
 RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
     case "${GDAL_BUILD_TYPE}" in \
-        Release) GDAL_SRC_PARENT=/tmp ;; \
-        RelWithDebInfo) GDAL_SRC_PARENT=${BASE_DIR}/src ;; \
+        Release | RelWithDebInfo) ;; \
         *) echo "GDAL_BUILD_TYPE must be Release or RelWithDebInfo, not '${GDAL_BUILD_TYPE}'" >&2; exit 1 ;; \
     esac && \
     GDAL_URL=https://download.osgeo.org/gdal/${GDAL_VERSION}/gdal-${GDAL_VERSION}.tar.gz && \
     wget -q "${GDAL_URL}" && \
     echo "${GDAL_SHA256}  gdal-${GDAL_VERSION}.tar.gz" | sha256sum -c - && \
-    mkdir -p "${GDAL_SRC_PARENT}" && \
-    tar -zxf "gdal-${GDAL_VERSION}.tar.gz" -C "${GDAL_SRC_PARENT}" && \
+    # keep the source tree in the image for reference and for debugging (RelWithDebInfo symbols point to it)
+    mkdir -p "${BASE_DIR}/src" && \
+    tar -zxf "gdal-${GDAL_VERSION}.tar.gz" -C "${BASE_DIR}/src" && \
     rm "gdal-${GDAL_VERSION}.tar.gz" && \
-    GDAL_DIR=${GDAL_SRC_PARENT}/gdal-${GDAL_VERSION} && \
+    GDAL_DIR=${BASE_DIR}/src/gdal-${GDAL_VERSION} && \
     mkdir -p "$GDAL_DIR/build" && \
     ( cd "$GDAL_DIR/build" && \
     cmake \
@@ -308,8 +308,7 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
     PY_CFLAGS=$(GDAL_BUILD_TYPE=${GDAL_BUILD_TYPE} ${BASE_DIR}/venv/bin/python -c 'import os, sysconfig; flags = sysconfig.get_config_var("CFLAGS").split(); print(" ".join(f for f in flags if os.environ["GDAL_BUILD_TYPE"] != "Release" or not f.startswith("-g")))') && \
     CFLAGS="${PY_CFLAGS} ${HARDENING_CFLAGS}" CXXFLAGS="${PY_CFLAGS} ${HARDENING_CFLAGS}" LDFLAGS="${HARDENING_LDFLAGS}" \
         cmake --build . --parallel "$(nproc)" --target install ) && \
-    # RelWithDebInfo keeps the source tree (the debug symbols point to it), without the build directory
-    if [ "${GDAL_BUILD_TYPE}" = Release ]; then rm -rf "$GDAL_DIR"; else rm -rf "$GDAL_DIR/build"; fi && \
+    rm -rf "$GDAL_DIR/build" && \
     ldconfig && \
     python3 /tmp/cyclonedx.py "${BASE_DIR}/share/sbom/gdal.cdx.json" \
         "gdal|${GDAL_VERSION}|pkg:generic/osgeo/gdal@${GDAL_VERSION}|cpe:2.3:a:osgeo:gdal:${GDAL_VERSION}:*:*:*:*:*:*:*|MIT"
