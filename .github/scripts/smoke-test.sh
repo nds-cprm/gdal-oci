@@ -1,6 +1,7 @@
 #!/bin/sh
 # Smoke test de uma imagem (release-py, devel ou release-nopy): versões, drivers, bindings Python e UID arbitrário.
 # Uso: .github/scripts/smoke-test.sh <imagem> [release-nopy]   (ex.: docker.io/ndscprm/gdal:3.12.4-py3.12)
+# Com Podman: DOCKER=podman .github/scripts/smoke-test.sh <imagem> [release-nopy]
 # Com "release-nopy" (imagem sem Python), as verificações do venv viram verificações de que o Python não existe.
 set -eu
 
@@ -8,8 +9,18 @@ IMAGE=${1:?uso: $0 <imagem> [release-nopy]}
 VARIANT=${2:-}
 case "$VARIANT" in "" | release-nopy) ;; *) echo "variante inválida: $VARIANT (use release-nopy ou nada)" >&2; exit 1 ;; esac
 
+DOCKER=${DOCKER:-docker}
+
+# o Podman acrescenta o UID ao /etc/passwd do container por padrão, e aí o nss_wrapper não entra em ação;
+# --passwd=false mantém o passwd da imagem, como no Docker
+if "$DOCKER" --version | grep -qi podman; then
+    container_run() { "$DOCKER" run --passwd=false "$@"; }
+else
+    container_run() { "$DOCKER" run "$@"; }
+fi
+
 run() {
-    docker run --rm -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" "$@"
+    container_run --rm -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" "$@"
 }
 
 # drivers habilitados explicitamente no Dockerfile (GDAL/OGR_BUILD_OPTIONAL_DRIVERS=OFF)
@@ -149,21 +160,21 @@ run sh -c '
 echo "## SBOM ok"
 
 echo "## UID arbitrário (nss_wrapper)"
-docker run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" \
+container_run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" \
     sh -c 'test "$(whoami)" = sgb && test "$HOME" = /tmp && test -w "$HOME"'
 # passwd/group virtuais num diretório exclusivo (mktemp, 0700), nunca num caminho fixo do /tmp
-docker run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" sh -c '
+container_run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 "$IMAGE" sh -c '
     case "$NSS_WRAPPER_PASSWD" in /tmp/nss_wrapper.*/passwd) ;; *) exit 1 ;; esac
     test "$(stat -c %a "${NSS_WRAPPER_PASSWD%/passwd}")" = 700'
 # USER_NAME personalizado; nome inválido (":" injetaria campos no passwd) impede o start
-docker run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 -e USER_NAME=app.user "$IMAGE" \
+container_run --rm --user 12345:0 -e ENTRYPOINT_QUIET_LOGS=1 -e USER_NAME=app.user "$IMAGE" \
     sh -c 'test "$(whoami)" = app.user'
-if docker run --rm --user 12345:0 -e USER_NAME='x:x:0:0::/:/bin/sh' "$IMAGE" true 2>/dev/null; then
+if container_run --rm --user 12345:0 -e USER_NAME='x:x:0:0::/:/bin/sh' "$IMAGE" true 2>/dev/null; then
     echo "USER_NAME inválido foi aceito" >&2
     exit 1
 fi
 # stdout do comando não pode ter saída do entrypoint
-out=$(docker run --rm --user 12345:0 "$IMAGE" sh -c 'echo ok' 2>/dev/null)
+out=$(container_run --rm --user 12345:0 "$IMAGE" sh -c 'echo ok' 2>/dev/null)
 test "$out" = ok
 echo "## nss_wrapper ok"
 
