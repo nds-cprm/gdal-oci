@@ -10,14 +10,14 @@ O mesmo [Dockerfile](Dockerfile) gera três imagens:
 |---|---|---|---|
 | **Para quê** | Compilar código contra o GDAL e depurar | Base de imagens de aplicação (produção) | Utilitários do GDAL e aplicações C/C++, sem Python |
 | **Base** | `python:3.12-trixie` | `python:3.12-slim-trixie` | `debian:trixie-slim` |
-| **Tamanho** | ~2,4 GB | ~620 MB | ~450 MB |
-| **GDAL** | Binários com símbolos de debug, headers, CMake/pkg-config e código-fonte em `/opt/geosgb/src` | Binários e bibliotecas, sem símbolos de debug | Igual ao `release-py` |
+| **Tamanho** | ~1,9 GB | ~620 MB | ~450 MB |
+| **GDAL** | Binários e bibliotecas, headers e CMake/pkg-config (sem símbolos de debug; veja [Depuração com gdb](#depuração-com-gdb)) | Binários e bibliotecas | Igual ao `release-py` |
 | **Python** | Virtualenv com os bindings `osgeo`, numpy e pyarrow | Igual ao `devel` | Não tem (nem os utilitários em Python, como `gdal_calc.py`) |
-| **Ferramentas** | `build-essential`, `cmake`, `swig`, `gdb` e os pacotes `-dev` de todas as dependências | Só o runtime | Só o runtime |
+| **Ferramentas** | `build-essential`, `cmake`, `swig` e os pacotes `-dev` de todas as dependências | Só o runtime | Só o runtime |
 | **Entrypoint** | [`/docker-entrypoint.sh`](docker-entrypoint.sh) + `/docker-entrypoint.d` | Igual ao `devel` | Igual ao `devel` |
 | **CMD** | `python3` | `python3` | `bash` |
 
-As três imagens têm o mesmo GDAL compilado uma única vez (`-O3`). O `release-py` é o `devel` sem os símbolos de debug, sem os arquivos usados só no build e com apenas as bibliotecas de runtime que o GDAL realmente usa (detectadas com `ldd` durante o build). O `release-nopy` é o `release-py` sem o Python e sem o virtualenv.
+As três imagens têm o mesmo GDAL compilado uma única vez (`-O3`). O `release-py` é o `devel` sem os arquivos usados só no build e com apenas as bibliotecas de runtime que o GDAL realmente usa (detectadas com `ldd` durante o build). O `release-nopy` é o `release-py` sem o Python e sem o virtualenv.
 
 ## Imagens e tags
 
@@ -362,18 +362,23 @@ Use o `devel` e o `release-nopy` do mesmo build (a tag datada de um corresponde 
 
 ### Depuração com gdb
 
-O `devel` tem `gdb`, os símbolos de debug do GDAL e o código-fonte em `/opt/geosgb/src/gdal-3.12.4`. O gdb mostra o código-fonte nos backtraces sem precisar de configuração. O container precisa da permissão de ptrace:
+O `devel` publicado não tem `gdb`, nem os símbolos de debug do GDAL, nem o código-fonte: eles ocupavam cerca de 500 MB e só servem para depurar. Há duas formas de depurar:
+
+- **Só com nomes de função**, na própria imagem publicada: instale o `gdb` como root (`apt-get update && apt-get install -y gdb`). Os backtraces mostram as funções exportadas do GDAL, mas não o arquivo e a linha.
+- **Com arquivo e linha**: construa o `devel` localmente com `GDAL_BUILD_TYPE=RelWithDebInfo`. O GDAL sai com o mesmo `-O3` e com os símbolos, e o código-fonte fica em `/opt/geosgb/src/gdal-<versão>`, onde o gdb o encontra sem configuração. O build leva de 15 a 25 minutos.
 
 ```bash
-docker run --rm -it --cap-add=SYS_PTRACE --security-opt seccomp=unconfined docker.io/ndscprm/gdal:3.12.4-py3.12-devel bash
+docker build --target devel --build-arg GDAL_BUILD_TYPE=RelWithDebInfo -t gdal:debug .
+docker run --rm -it --cap-add=SYS_PTRACE --security-opt seccomp=unconfined gdal:debug bash
 
+apt-get update && apt-get install -y gdb
 gdb --args gdalinfo arquivo.tif
 (gdb) break GDALOpenEx
 (gdb) run
 (gdb) bt
 ```
 
-Para analisar um core dump gerado no `release-py`, abra-o no `devel` da mesma versão: os binários são os mesmos, só que com os símbolos.
+O container precisa da permissão de ptrace (`--cap-add=SYS_PTRACE --security-opt seccomp=unconfined`). Para analisar um core dump gerado no `release-py`, abra-o num `devel` com `RelWithDebInfo` construído do mesmo commit: o código de máquina é o mesmo (`-O3` nos dois casos), só que com os símbolos. Os pacotes do Debian também podem ter símbolos baixados sob demanda pelo debuginfod (`export DEBUGINFOD_URLS=https://debuginfod.debian.net`).
 
 ## Versões e build args
 
@@ -384,6 +389,7 @@ Para analisar um core dump gerado no `release-py`, abra-o no `devel` da mesma ve
 | `GDAL_VERSION` / `GDAL_SHA256` | `3.12.4` / SHA256 do tarball |
 | `ARROW_VERSION` / `ARROW_SHA256` | `26.0.0` / SHA256 do tarball |
 | `THRIFT_VERSION` / `THRIFT_SHA256` | `0.25.0` / SHA256 do tarball |
+| `GDAL_BUILD_TYPE` | `Release` (sem símbolos de debug). `RelWithDebInfo` acrescenta os símbolos e mantém o código-fonte no `devel`, para depurar (veja [Depuração com gdb](#depuração-com-gdb)); o código das três imagens é o mesmo |
 | `HARDENING_CFLAGS` / `HARDENING_LDFLAGS` | stack protector, `_FORTIFY_SOURCE=3`, stack clash protection e RELRO completo (GDAL, Arrow, Thrift e pyarrow) |
 | numpy | `2.5.4` (versão usada para compilar os bindings; fixada com hash em [requirements/gdal-build.txt](requirements/gdal-build.txt), junto com pip, setuptools e wheel) |
 | pyarrow | igual ao `ARROW_VERSION` (`26.0.0`), compilado do mesmo tarball do Arrow; as dependências de build ficam fixadas com hash em [requirements/pyarrow-build.txt](requirements/pyarrow-build.txt) e não entram na imagem |
