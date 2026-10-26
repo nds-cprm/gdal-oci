@@ -395,6 +395,75 @@ O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do reposi
 
 **SBOM.** As imagens publicadas têm attestations de SBOM (SPDX) e de provenance. Para ver: `docker buildx imagetools inspect docker.io/ndscprm/gdal:3.12.4-py3.12 --format '{{ json .SBOM }}'`. Os componentes que não vêm do apt (GDAL, Arrow, Thrift, xsimd, simdjson, Oracle Instant Client) e o RapidJSON, que vem do apt mas fica compilado dentro do `libarrow.so`, também ficam descritos em CycloneDX em `/opt/geosgb/share/sbom/`, dentro da imagem. Para analisar a imagem com o Grype, use a attestation (`grype sbom:<arquivo SPDX>`). Analisando a imagem direto, o Grype não lê esses arquivos. Outra opção é gerar o SBOM com `syft <imagem> --select-catalogers +sbom-cataloger -o spdx-json` e passá-lo ao Grype.
 
+## Workflow reutilizável
+
+O [oci-image.yml](.github/workflows/oci-image.yml) é um workflow reutilizável (`workflow_call`) para as imagens construídas sobre esta, como a [mapserver-oci](https://github.com/nds-cprm/mapserver-oci), a [mapproxy-oci](https://github.com/nds-cprm/mapproxy-oci) e a [pygeoapi-oci](https://github.com/nds-cprm/pygeoapi-oci). Ele segue o modelo do CI desta imagem:
+
+1. **`prepare`**: resolve a versão (entrada `version` ou a linha `ARG <version-arg>=<versão>` do Dockerfile, validada por `version-pattern`) e confere as variantes.
+2. **`build`**: um job por arquitetura, em runner nativo (`amd64` em `ubuntu-24.04` e `arm64` em `ubuntu-24.04-arm`, sem QEMU). Todas as variantes saem de uma única chamada do Bake, então os estágios que elas têm em comum são construídos uma vez só: a `-devel` e a release saem do mesmo build. As imagens são publicadas só por digest, com attestations de SBOM e de provenance, e o `test` de cada variante roda no próprio runner.
+3. **`scan`**: Docker Scout e Grype nas variantes com `"scan": true`, antes de existir qualquer tag. Os relatórios vão para o code scanning (categorias `docker-scout-<variante>-<arch>` e `grype-<variante>-<arch>`). O Grype analisa a attestation de SBOM, que inclui os CycloneDX desta imagem em `/opt/geosgb/share/sbom`, então também enxerga o GDAL, o Arrow e o Thrift herdados, que o Scout ignora. Com `fail-on-severity`, uma vulnerabilidade com correção disponível, dessa severidade ou acima e fora do VEX, falha o job.
+4. **`merge`**: cria as tags multiplataforma: a móvel (`tag` da variante) e a datada, `<tag>-<AAAAMMDD>` (UTC; `.2`, `.3`... nos builds seguintes do mesmo dia, nunca sobrescrita).
+
+Uma falha no teste ou no scan de qualquer variante ou arquitetura impede a criação das tags. Com `push: false` (pull requests), as imagens só são construídas, carregadas no runner e testadas: sem scan, sem tags e sem os secrets.
+
+Exemplo (o da mapserver-oci, com uma `-devel` e uma release):
+
+```yaml
+permissions:
+  contents: read
+
+jobs:
+  image:
+    uses: nds-cprm/gdal-oci/.github/workflows/oci-image.yml@main
+    permissions:
+      contents: read
+      security-events: write   # SARIF para o code scanning (em repositório privado, também actions: read)
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    with:
+      image: docker.io/ndscprm/mapserver
+      version-arg: MAPSERVER_VERSION
+      variants: |
+        [
+          {"name": "devel", "target": "build", "tag": "{version}-devel",
+           "test": "docker run --rm \"$IMAGE_REF\" mapserv -v | grep SUPPORTS=FASTCGI"},
+          {"name": "release", "target": "release", "tag": "{version}", "scan": true, "cache-to": true,
+           "test": "sh .github/scripts/smoke-test.sh \"$IMAGE_REF\""}
+        ]
+```
+
+| Entrada | Padrão | Descrição |
+|---|---|---|
+| `image` | (obrigatória) | Repositório da imagem, sem tag (ex.: `docker.io/ndscprm/mapserver`) |
+| `variants` | (obrigatória) | Array JSON, uma entrada por variante (campos abaixo) |
+| `version-arg` | (obrigatória) | `ARG` do Dockerfile com a versão padrão, numa linha `ARG <nome>=<versão>` |
+| `version` | vazio | Versão no lugar da do Dockerfile; também é passada como `--build-arg <version-arg>=<versão>` |
+| `version-pattern` | `^[0-9]+\.[0-9]+\.[0-9]+$` | Expressão regular (ERE) que a versão precisa satisfazer |
+| `context` / `dockerfile` | `.` / `Dockerfile` | Contexto do build e Dockerfile, relativo ao contexto |
+| `build-args` | vazio | Build args extras, um `CHAVE=valor` por linha |
+| `labels` | vazio | Labels extras, um `CHAVE=valor` por linha, com `{version}` substituído. `org.opencontainers.image.created`, `revision` e `source` são sempre definidos |
+| `no-cache` | `false` | Ignora o cache (ex.: rebuild agendado, para pegar os pacotes atuais do apt e do pip) |
+| `push` | `true` | `false` só constrói e testa |
+| `dated-tags` | `true` | Cria também as tags `<tag>-<AAAAMMDD>` |
+| `vex` | vazio | Arquivo OpenVEX para o Grype, relativo à raiz do repositório |
+| `fail-on-severity` | vazio | `negligible`, `low`, `medium`, `high` ou `critical`: uma vulnerabilidade com correção disponível nessa severidade ou acima falha o scan. Vazio só reporta |
+| `runners` | amd64 e arm64 nativos | Array JSON de `{"arch", "runner"}`, um job de build para cada |
+
+Campos de cada variante:
+
+| Campo | Descrição |
+|---|---|
+| `name` | Nome do alvo do Bake e da variante nos jobs, nos artifacts e nas categorias do SARIF (`[a-z0-9_-]`) |
+| `tag` | Tag móvel, com `{version}` substituído (ex.: `{version}-devel`) |
+| `target` | Estágio do Dockerfile. Sem ele, é construído o último estágio |
+| `scan` | `true` para analisar a variante no job `scan` |
+| `cache-to` | `true` na variante que grava o cache do GHA (`mode=max`). Dê à variante que passa por todos os estágios. Se nenhuma tiver, é a última |
+| `no-cache-filters` | Estágios sempre reconstruídos, mesmo com cache (ex.: o do `apt-get install`, para pegar as correções do Debian) |
+| `test` | Comando `bash` (`-euo pipefail`) rodado no runner depois do build, no checkout do repositório que chamou, com `IMAGE_REF` (a imagem por digest, ou `<image>:ci-<variante>-<arch>` com `push: false`), `VARIANT` e `ARCH` definidos |
+
+O cache do GHA e os artifacts de digests levam o nome da imagem (`<nome>-<arch>`), então um repositório pode chamar o workflow para mais de uma imagem. As actions são fixadas por SHA de commit e atualizadas pelo Dependabot deste repositório. Uma mudança no workflow vale para todos os projetos que o chamam pelo mesmo `ref`: verifique-os antes de publicá-la.
+
 ## Licença
 
 [Apache License 2.0](LICENSE). Os componentes incluídos na imagem têm licenças próprias, em especial o **Oracle Instant Client**, distribuído sob a licença da Oracle.

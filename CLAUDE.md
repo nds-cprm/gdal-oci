@@ -10,6 +10,19 @@ O repositório contém o [README.md](README.md) (documentação para quem usa as
 
 Esta imagem servirá de base para outras imagens de aplicação Python com GDAL. A variante `release-nopy` tem o mesmo runtime do GDAL sem Python, para aplicações que só usam os utilitários ou a API C/C++.
 
+## Workflow reutilizável ([oci-image.yml](.github/workflows/oci-image.yml))
+
+Workflow `workflow_call` usado pelas imagens derivadas (mapserver-oci, mapproxy-oci e pygeoapi-oci, que o chamam por `@main`). Entradas, campos das variantes e exemplo estão no [README.md](README.md#workflow-reutilizável); mantenha-os em sincronia com o arquivo. Segue o modelo do `docker-image.yml` abaixo (runners nativos, push por digest, SBOM/provenance, Scout + Grype na attestation antes das tags, tag datada com `.N`), com estas diferenças:
+
+- **Bake em vez de um `build-push-action` por variante**: o job `build` gera com `jq` uma definição JSON do Bake (um alvo por variante) em `$RUNNER_TEMP` e roda o `docker/bake-action` com `source: .` (contexto local, não o Git context padrão desde a v6). Uma chamada só, num builder só: os estágios comuns às variantes são construídos uma vez. O digest de cada variante vem do `metadata` do Bake (`<alvo>.containerimage.digest`).
+- **Variantes como dados** (entrada `variants`, JSON): o `prepare` valida (nome `[a-z0-9_-]`, `tag` obrigatória, nomes e tags únicos, tag final válida) e preenche os padrões; os outros jobs leem o JSON normalizado. O `cache-to` vai para a variante marcada ou, sem marcação, para a última. A matriz do `scan` vem da lista de variantes com `scan: true`; com a lista vazia, o job é pulado e o `merge` aceita `skipped`.
+- **`push: false`**: saída `type=docker` (`<image>:ci-<variante>-<arch>`), sem attestations (o exportador `docker` não as aceita), sem login, sem `scan` e sem `merge`.
+- **Nomes por imagem**: cache do GHA e artifacts de digests usam `<nome da imagem>-<arch>` (`slug` do `prepare`), não só `<arch>`.
+- **Gate opcional**: sem `fail-on-severity`, o scan só reporta (a política do mapserver-oci e do mapproxy-oci); com ele, igual ao gate deste repositório, na severidade escolhida.
+- **Testes**: o campo `test` é executado com `bash -euo pipefail -c`, no checkout do chamador (o `actions/checkout` de um workflow reutilizável faz checkout do repositório que chamou), com `IMAGE_REF`, `VARIANT` e `ARCH`.
+
+Ao mudar o workflow: rode o `actionlint`, teste os blocos `run` localmente quando mexer em `jq`/shell (extraia-os do YAML e rode com as variáveis de ambiente do passo) e lembre que a mudança vale na hora para todos os chamadores em `@main`.
+
 ## CI ([docker-image.yml](.github/workflows/docker-image.yml))
 
 No CI, as variantes têm os nomes dos estágios do Dockerfile (`devel`, `release-py` e `release-nopy`) nos passos, nos `id`, nos `target`/`no-cache-filters`, na matriz do `scan` e nos diretórios de digests. Disparado manualmente (`workflow_dispatch`) e toda segunda às 03:00 UTC (`schedule`, só no branch padrão; o GitHub desativa schedules de repositórios públicos sem atividade por 60 dias). Push/PR comentados. Três jobs:

@@ -18,9 +18,14 @@ O workflow só roda manualmente ou pelo agendamento semanal (`push`/`pull_reques
 - Adicionar um gatilho `pull_request` que rode só o `build` sem push (`push=false` ou `load`) e o smoke test, sem os jobs `scan` e `merge`.
 
 ### Tag datada robusta a falhas do registry
-No job `merge`, o laço que escolhe o sufixo da tag datada (`<AAAAMMDD>`, `.2`, `.3`...) trata qualquer falha do `docker buildx imagetools inspect` como "a tag não existe". Uma falha momentânea do registry para uma tag que existe faria ela ser sobrescrita.
+No job `merge`, o laço que escolhe o sufixo da tag datada (`<AAAAMMDD>`, `.2`, `.3`...) trata qualquer falha do `docker buildx imagetools inspect` como "a tag não existe". Uma falha momentânea do registry para uma tag que existe faria ela ser sobrescrita. O mesmo laço está no `merge` do [oci-image.yml](.github/workflows/oci-image.yml).
 
-- Distinguir "not found" de outros erros (ex.: checar a mensagem ou o código de retorno) e falhar o job nos demais casos.
+- Distinguir "not found" de outros erros (ex.: checar a mensagem ou o código de retorno) e falhar o job nos demais casos, nos dois workflows.
+
+### Versionar o workflow reutilizável
+Os projetos chamam o [oci-image.yml](.github/workflows/oci-image.yml) por `@main`, então qualquer commit no `main` muda o CI de todos na hora, sem revisão do lado deles.
+
+- Depois do primeiro uso real, criar uma tag (ex.: `oci-image-v1`) e trocar os `uses:` dos projetos por ela, ou pelo SHA do commit com a tag em comentário, para o Dependabot deles (ecossistema `github-actions`) propor as atualizações.
 
 ## Prioridade baixa
 
@@ -29,6 +34,11 @@ A `python:slim` traz 11 binários setuid/setgid (`su`, `mount`, `umount`, `passw
 
 - Remover os bits no `release-py`: `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`.
 - Alternativa ou complemento: recomendar `--security-opt no-new-privileges` no README.
+
+### Usar o workflow reutilizável no CI desta imagem
+O `docker-image.yml` e o `oci-image.yml` repetem a mesma lógica (build por digest, scan, tags datadas). O `docker-image.yml` ainda tem o que o reutilizável não cobre: tags com duas versões (`<GDAL_VERSION>-py<PYTHON_VERSION>`), as categorias de SARIF antigas (histórico do code scanning) e a verificação do `thrift` na attestation.
+
+- Avaliar se vale estender o `oci-image.yml` (ex.: `{version}` vindo de mais de um `ARG`, verificação extra no `scan`) para este repositório usá-lo também, e o teste das mudanças passar a ser o build da própria base.
 
 ### Imagem `devel` fora do scan
 O job `scan` verifica só o `release-py`. O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.

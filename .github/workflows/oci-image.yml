@@ -1,0 +1,505 @@
+# Reusable workflow: builds, tests, scans and publishes a multi-platform image made of one or more
+# variants (Dockerfile stages), e.g. a release and its -devel. Used by the images built on top of
+# ndscprm/gdal (mapserver-oci, mapproxy-oci, pygeoapi-oci); see the "Workflow reutilizável" section of
+# the README for the inputs and an example.
+#
+# Jobs:
+#   prepare  resolves the version (input or ARG <version-arg> of the Dockerfile) and checks the variants
+#   build    one job per architecture on native runners; every variant is built by a single Bake call, so
+#            they share the stages they have in common (same build), then each variant's test runs.
+#            Images are pushed by digest only (no tag); with push: false they are only loaded and tested
+#   scan     Docker Scout and Grype on the variants with "scan": true, before any tag exists; reports go
+#            to code scanning, and fail-on-severity turns fixable vulnerabilities into a failure
+#   merge    creates the multi-platform tags: the moving one (variant "tag", with {version}) and a dated
+#            one, <tag>-<YYYYMMDD> (UTC; .2, .3... for later builds on the same day, never overwritten)
+#
+# A failed test or scan stops the publication: no tag is created.
+# The caller grants the permissions: contents: read and security-events: write (plus actions: read in
+# private repositories), and passes the DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets (not needed with
+# push: false).
+name: OCI image
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: Image repository, without tag (e.g. docker.io/ndscprm/mapserver)
+        required: true
+        type: string
+      variants:
+        description: >-
+          JSON array, one object per variant: name (Bake target, [a-z0-9_-]), tag (moving tag, {version} is
+          replaced), target (Dockerfile stage; omitted = last stage), scan (bool), cache-to (bool: writes the
+          GHA cache; give it to the variant that goes through every stage, default the last one),
+          no-cache-filters (array of stages always rebuilt), test (shell command, run with IMAGE_REF,
+          VARIANT and ARCH set)
+        required: true
+        type: string
+      version-arg:
+        description: Dockerfile ARG holding the default version (a line "ARG <name>=<version>")
+        required: true
+        type: string
+      version:
+        description: Version to build instead of the Dockerfile default (also passed as --build-arg <version-arg>)
+        required: false
+        type: string
+        default: ""
+      version-pattern:
+        description: Extended regular expression the version must match
+        required: false
+        type: string
+        default: ^[0-9]+\.[0-9]+\.[0-9]+$
+      context:
+        description: Build context, relative to the repository root
+        required: false
+        type: string
+        default: .
+      dockerfile:
+        description: Dockerfile, relative to the context
+        required: false
+        type: string
+        default: Dockerfile
+      build-args:
+        description: Extra build args, one KEY=VALUE per line
+        required: false
+        type: string
+        default: ""
+      labels:
+        description: >-
+          Extra image labels, one KEY=VALUE per line, {version} is replaced (org.opencontainers.image.created,
+          revision and source are always set)
+        required: false
+        type: string
+        default: ""
+      no-cache:
+        description: Ignore the build cache (e.g. for scheduled rebuilds, to get current apt/pip packages)
+        required: false
+        type: boolean
+        default: false
+      push:
+        description: Push, scan and tag; false only builds and tests (pull requests)
+        required: false
+        type: boolean
+        default: true
+      dated-tags:
+        description: Also create the immutable <tag>-<YYYYMMDD> tags
+        required: false
+        type: boolean
+        default: true
+      vex:
+        description: OpenVEX file for Grype, relative to the repository root
+        required: false
+        type: string
+        default: ""
+      fail-on-severity:
+        description: >-
+          Fail the scan (no tags) on a vulnerability with a fix available at or above this severity
+          (negligible, low, medium, high, critical); empty = only report
+        required: false
+        type: string
+        default: ""
+      runners:
+        description: JSON array of {arch, runner}, one build job each
+        required: false
+        type: string
+        default: >-
+          [{"arch": "amd64", "runner": "ubuntu-24.04"}, {"arch": "arm64", "runner": "ubuntu-24.04-arm"}]
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+    outputs:
+      version:
+        description: Version that was built
+        value: ${{ jobs.prepare.outputs.version }}
+      tags:
+        description: JSON array of the tags created (empty with push false)
+        value: ${{ jobs.merge.outputs.tags }}
+
+# least privilege for the GITHUB_TOKEN; jobs that need more ask for it
+permissions:
+  contents: read
+
+# Actions are pinned by commit SHA (the comment is the release); Dependabot keeps them up to date
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      variants: ${{ steps.variants.outputs.variants }}
+      scan: ${{ steps.variants.outputs.scan }}
+      build-args: ${{ steps.variants.outputs.build-args }}
+      labels: ${{ steps.variants.outputs.labels }}
+      slug: ${{ steps.variants.outputs.slug }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    # the Dockerfile ARG is the single source of the default version
+    - name: Resolve version
+      id: version
+      env:
+        INPUT_VERSION: ${{ inputs.version }}
+        VERSION_ARG: ${{ inputs.version-arg }}
+        VERSION_PATTERN: ${{ inputs.version-pattern }}
+        DOCKERFILE: ${{ inputs.context }}/${{ inputs.dockerfile }}
+      run: |
+        if [ -n "$INPUT_VERSION" ]; then
+          version=$INPUT_VERSION
+        else
+          version=$(sed -nE "s/^ARG ${VERSION_ARG}=(.+)$/\1/p" "$DOCKERFILE")
+        fi
+        if ! [[ "$version" =~ $VERSION_PATTERN ]]; then
+          echo "::error::invalid version '${version}' (ARG ${VERSION_ARG} in ${DOCKERFILE} or the version input)"
+          exit 1
+        fi
+        echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+    - name: Check variants and build options
+      id: variants
+      env:
+        IMAGE: ${{ inputs.image }}
+        VARIANTS: ${{ inputs.variants }}
+        BUILD_ARGS: ${{ inputs.build-args }}
+        LABELS: ${{ inputs.labels }}
+        INPUT_VERSION: ${{ inputs.version }}
+        VERSION_ARG: ${{ inputs.version-arg }}
+        VERSION: ${{ steps.version.outputs.version }}
+        FAIL_ON_SEVERITY: ${{ inputs.fail-on-severity }}
+      run: |
+        case "$FAIL_ON_SEVERITY" in
+          "" | negligible | low | medium | high | critical) ;;
+          *) echo "::error::invalid fail-on-severity '${FAIL_ON_SEVERITY}'"; exit 1 ;;
+        esac
+        # defaults filled in, so the other jobs read every field without checks
+        checked=$(jq -ce '
+          if type != "array" or length == 0 then error("variants must be a non-empty JSON array") else . end
+          | map(
+              if (.name | type) != "string" or (.name | test("^[a-z0-9][a-z0-9_-]*$") | not)
+                then error("invalid variant name: \(.name)") else . end
+              | if (.tag | type) != "string" or .tag == "" then error("variant \(.name): tag is required") else . end
+              | {name, tag, target: (.target // ""), scan: (.scan // false), "cache-to": (.["cache-to"] // null),
+                 "no-cache-filters": (.["no-cache-filters"] // []), test: (.test // "")})
+          | if (map(.name) | unique | length) != length then error("duplicate variant names") else . end
+          | if (map(.tag) | unique | length) != length then error("duplicate variant tags") else . end
+          # nobody writes the cache: the last variant does
+          | if any(.["cache-to"] == true) then map(.["cache-to"] //= false)
+            else (.[:-1] | map(.["cache-to"] = false)) + [.[-1] | .["cache-to"] = true] end
+        ' <<< "$VARIANTS")
+        while IFS= read -r tag; do
+          [[ "$tag" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,113}$ ]] || { echo "::error::invalid tag '${tag}'"; exit 1; }
+        done < <(jq -r --arg v "$VERSION" '.[].tag | gsub("\\{version\\}"; $v)' <<< "$checked")
+
+        # KEY=VALUE lines -> JSON object (blank lines and # comments ignored)
+        to_json() {
+          jq -Rcn '[inputs | select(test("^\\s*(#|$)") | not)
+                    | capture("^(?<key>[^=]+)=(?<value>.*)$") // error("not KEY=VALUE: \(.)")]
+                   | from_entries'
+        }
+        args_json=$(to_json <<< "$BUILD_ARGS")
+        if [ -n "$INPUT_VERSION" ]; then
+          args_json=$(jq -c --arg k "$VERSION_ARG" --arg v "$VERSION" '.[$k] = $v' <<< "$args_json")
+        fi
+        labels_json=$(to_json <<< "$LABELS" | jq -c --arg v "$VERSION" \
+          --arg created "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+          --arg revision "$GITHUB_SHA" \
+          --arg source "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" '
+          {"org.opencontainers.image.created": $created,
+           "org.opencontainers.image.revision": $revision,
+           "org.opencontainers.image.source": $source} + map_values(gsub("\\{version\\}"; $v))')
+
+        {
+          echo "variants=${checked}"
+          echo "scan=$(jq -c 'map(select(.scan) | .name)' <<< "$checked")"
+          echo "build-args=${args_json}"
+          echo "labels=${labels_json}"
+          # artifact names and cache scopes: unique per image, so a caller can build several images
+          echo "slug=$(tr -c 'a-zA-Z0-9\n' '-' <<< "${IMAGE##*/}")"
+        } >> "$GITHUB_OUTPUT"
+        jq . <<< "$checked"
+
+  build:
+    needs: prepare
+    strategy:
+      fail-fast: true
+      matrix:
+        include: ${{ fromJSON(inputs.runners) }}
+    runs-on: ${{ matrix.runner }}
+    env:
+      IMAGE: ${{ inputs.image }}
+      ARCH: ${{ matrix.arch }}
+      SLUG: ${{ needs.prepare.outputs.slug }}
+      VARIANTS: ${{ needs.prepare.outputs.variants }}
+      # build records (.dockerbuild, Docker Desktop Builds view) kept 14 days instead of 90
+      DOCKER_BUILD_RECORD_RETENTION_DAYS: 14
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+    - name: Login to Docker Hub
+      if: inputs.push
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # One Bake target per variant, all built by the same call: stages they share are built once.
+    # Pushed by digest with SBOM and provenance attestations (kept by imagetools create in the tags);
+    # with push: false, loaded into the local image store as <image>:ci-<variant>-<arch>
+    - name: Write the Bake definition
+      env:
+        CONTEXT: ${{ inputs.context }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        BUILD_ARGS: ${{ needs.prepare.outputs.build-args }}
+        LABELS: ${{ needs.prepare.outputs.labels }}
+        PUSH: ${{ inputs.push }}
+        NO_CACHE: ${{ inputs.no-cache }}
+      run: |
+        jq -n --argjson variants "$VARIANTS" --argjson args "$BUILD_ARGS" --argjson labels "$LABELS" \
+          --argjson push "$PUSH" --argjson nocache "$NO_CACHE" \
+          --arg image "$IMAGE" --arg arch "$ARCH" --arg scope "${SLUG}-${ARCH}" \
+          --arg context "$CONTEXT" --arg dockerfile "$DOCKERFILE" '
+          {
+            group: {default: {targets: ($variants | map(.name))}},
+            target: ($variants | map({key: .name, value: (
+              {
+                context: $context,
+                dockerfile: $dockerfile,
+                platforms: ["linux/\($arch)"],
+                pull: true,
+                "no-cache": $nocache,
+                args: $args,
+                labels: $labels,
+                "cache-from": ["type=gha,scope=\($scope)"],
+                output: [if $push
+                  then "type=image,name=\($image),push-by-digest=true,name-canonical=true,push=true"
+                  else "type=docker,name=\($image):ci-\(.name)-\($arch)" end]
+              }
+              + (if .target != "" then {target} else {} end)
+              + (if .["cache-to"] then {"cache-to": ["type=gha,scope=\($scope),mode=max"]} else {} end)
+              + (if (.["no-cache-filters"] | length) > 0 then {"no-cache-filter": .["no-cache-filters"]} else {} end)
+              + (if $push then {attest: ["type=sbom", "type=provenance,mode=max"]} else {} end)
+            )}) | from_entries)
+          }' > "${RUNNER_TEMP}/docker-bake.json"
+        jq . "${RUNNER_TEMP}/docker-bake.json"
+
+    - name: Build ${{ inputs.push && 'and push ' || '' }}images
+      id: bake
+      uses: docker/bake-action@59cb1203cd42bcefd40a1b6d73b589e48c86040e # v7.5.0
+      with:
+        source: .
+        files: ${{ runner.temp }}/docker-bake.json
+
+    - name: Export digests
+      id: digests
+      env:
+        METADATA: ${{ steps.bake.outputs.metadata }}
+        PUSH: ${{ inputs.push }}
+      run: |
+        mkdir -p "${RUNNER_TEMP}/digests"
+        for name in $(jq -r '.[].name' <<< "$VARIANTS"); do
+          if [ "$PUSH" = true ]; then
+            digest=$(jq -er --arg n "$name" '.[$n]["containerimage.digest"]' <<< "$METADATA")
+            mkdir -p "${RUNNER_TEMP}/digests/${name}"
+            touch "${RUNNER_TEMP}/digests/${name}/${digest#sha256:}"
+            echo "${name}=${IMAGE}@${digest}" >> "$GITHUB_OUTPUT"
+          else
+            echo "${name}=${IMAGE}:ci-${name}-${ARCH}" >> "$GITHUB_OUTPUT"
+          fi
+        done
+
+    # on the native runner of each architecture; a failure stops scan and merge, so a broken image gets no tag
+    - name: Test images
+      env:
+        REFS: ${{ toJSON(steps.digests.outputs) }}
+      run: |
+        for name in $(jq -r '.[] | select(.test != "") | .name' <<< "$VARIANTS"); do
+          echo "::group::test ${name}"
+          IMAGE_REF=$(jq -er --arg n "$name" '.[$n]' <<< "$REFS") \
+          VARIANT=$name \
+            bash -euo pipefail -c "$(jq -r --arg n "$name" '.[] | select(.name == $n) | .test' <<< "$VARIANTS")"
+          echo "::endgroup::"
+        done
+
+    - name: Upload digests
+      if: inputs.push
+      uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      with:
+        name: digests-${{ needs.prepare.outputs.slug }}-${{ matrix.arch }}
+        path: ${{ runner.temp }}/digests/*
+        if-no-files-found: error
+        retention-days: 1
+
+  # Scans the variants with "scan": true of each architecture before any tag exists
+  scan:
+    needs: [prepare, build]
+    if: inputs.push && needs.prepare.outputs.scan != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: ${{ fromJSON(inputs.runners).*.arch }}
+        variant: ${{ fromJSON(needs.prepare.outputs.scan) }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # upload of the SARIF reports to code scanning
+      security-events: write
+    env:
+      IMAGE: ${{ inputs.image }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    - name: Download digests
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: digests-${{ needs.prepare.outputs.slug }}-${{ matrix.arch }}
+        path: ${{ runner.temp }}/digests
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+    # Docker Scout requires a Docker Hub login
+    - name: Login to Docker Hub
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    # Grype scans the BuildKit SBOM attestation, not the image: only the attestation includes the CycloneDX
+    # files of ndscprm/gdal in /opt/geosgb/share/sbom (GDAL, Arrow, Thrift...), which Scout ignores
+    - name: Get the SBOM attestation of the ${{ matrix.variant }} image
+      id: sbom
+      working-directory: ${{ runner.temp }}/digests/${{ matrix.variant }}
+      run: |
+        ref="${IMAGE}@sha256:$(ls)"
+        echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+        # single-platform image: {"SPDX": ...}; keyed by platform otherwise
+        docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' \
+          | jq -e 'if has("SPDX") then .SPDX else (to_entries[0].value.SPDX) end' > "${RUNNER_TEMP}/image.spdx.json"
+
+    - name: Analyze with Docker Scout
+      uses: docker/scout-action@a4119c5a8c5076236a54e4ce99531f7e4dd2ef84 # v1.27.0
+      with:
+        command: cves
+        image: ${{ steps.sbom.outputs.ref }}
+        platform: linux/${{ matrix.arch }}
+        sarif-file: scout.sarif
+        summary: true
+
+    # one category per variant and architecture, so an upload does not replace the others' results
+    - name: Upload Docker Scout SARIF result
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      with:
+        sarif_file: scout.sarif
+        category: docker-scout-${{ matrix.variant }}-${{ matrix.arch }}
+
+    # full report (all severities, fixed or not) for code scanning
+    - name: Analyze with Grype
+      id: grype
+      uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+      with:
+        sbom: ${{ runner.temp }}/image.spdx.json
+        vex: ${{ inputs.vex }}
+        fail-build: false
+        output-format: sarif
+
+    - name: Upload Grype SARIF result
+      uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      with:
+        sarif_file: ${{ steps.grype.outputs.sarif }}
+        category: grype-${{ matrix.variant }}-${{ matrix.arch }}
+
+    # the gate itself, after the reports are uploaded so they are visible even when it fails
+    - name: Fail on fixable ${{ inputs.fail-on-severity }} vulnerabilities
+      if: inputs.fail-on-severity != ''
+      uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+      with:
+        sbom: ${{ runner.temp }}/image.spdx.json
+        vex: ${{ inputs.vex }}
+        only-fixed: true
+        severity-cutoff: ${{ inputs.fail-on-severity }}
+        fail-build: true
+        output-format: table
+
+  # Creates the multi-platform tags once every build, test and scan succeeded (no scan job = no scan gate)
+  merge:
+    needs: [prepare, build, scan]
+    if: >-
+      !cancelled() && inputs.push && needs.build.result == 'success'
+      && (needs.scan.result == 'success' || needs.scan.result == 'skipped')
+    runs-on: ubuntu-24.04
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+    env:
+      IMAGE: ${{ inputs.image }}
+    steps:
+    - name: Download digests
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        path: ${{ runner.temp }}/digests
+        pattern: digests-${{ needs.prepare.outputs.slug }}-*
+        merge-multiple: true
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Create multi-platform tags
+      id: tags
+      env:
+        VARIANTS: ${{ needs.prepare.outputs.variants }}
+        VERSION: ${{ needs.prepare.outputs.version }}
+        DATED_TAGS: ${{ inputs.dated-tags }}
+      working-directory: ${{ runner.temp }}/digests
+      run: |
+        tag_of() {
+          jq -r --arg n "$1" --arg v "$VERSION" '.[] | select(.name == $n) | .tag | gsub("\\{version\\}"; $v)' <<< "$VARIANTS"
+        }
+        names=$(jq -r '.[].name' <<< "$VARIANTS")
+        # dated suffix, never overwritten: a second build on the same day gets .2, .3, ...; checked on the first
+        # variant, and every variant of this build gets the same suffix
+        if [ "$DATED_TAGS" = true ]; then
+          first=$(tag_of "$(head -n1 <<< "$names")")
+          stamp=$(date -u +%Y%m%d)
+          suffix=$stamp
+          n=1
+          while docker buildx imagetools inspect "${IMAGE}:${first}-${suffix}" > /dev/null 2>&1; do
+            n=$((n + 1))
+            suffix="${stamp}.${n}"
+          done
+        fi
+        created=()
+        for name in $names; do
+          tag=$(tag_of "$name")
+          args=(-t "${IMAGE}:${tag}")
+          created+=("${IMAGE}:${tag}")
+          if [ "$DATED_TAGS" = true ]; then
+            args+=(-t "${IMAGE}:${tag}-${suffix}")
+            created+=("${IMAGE}:${tag}-${suffix}")
+          fi
+          # shellcheck disable=SC2046
+          docker buildx imagetools create "${args[@]}" $(printf "${IMAGE}@sha256:%s " $(ls "$name"))
+          docker buildx imagetools inspect "${IMAGE}:${tag}"
+        done
+        echo "tags=$(printf '%s\n' "${created[@]}" | jq -Rcn '[inputs]')" >> "$GITHUB_OUTPUT"
+        {
+          echo "### Tags"
+          # shellcheck disable=SC2016 # the backticks are Markdown
+          printf -- '- `%s`\n' "${created[@]}"
+        } >> "$GITHUB_STEP_SUMMARY"
