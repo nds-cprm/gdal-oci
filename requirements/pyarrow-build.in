@@ -4,7 +4,8 @@
 #   docker run --rm -v "$PWD/requirements:/r" -w /r python:3.12-slim sh -c \
 #     "pip install -q pip-tools && pip-compile -q --generate-hashes --allow-unsafe --strip-extras -o pyarrow-build.txt pyarrow-build.in"
 # numpy must be the version of gdal-build.in, so the wheel is built with the numpy of the image venv: the constraint
-# below makes pip-compile fail if they differ, and the Dockerfile checks the installed versions
+# below makes pip-compile fail if they differ, and the Dockerfile checks the installed versions. Dependabot
+# ignores numpy (a PR changing only one of the files would break the build): it is updated by hand in both
 -c gdal-build.in
 cython==3.3.0
 libcst==1.9.0

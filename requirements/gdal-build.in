@@ -5,5 +5,6 @@
 pip==26.2.2
 setuptools==84.2.1
 wheel==0.48.0
-# GDAL bindings built against numpy 2 also run with numpy 1.x (the reverse fails at import)
+# GDAL bindings built against numpy 2 also run with numpy 1.x (the reverse fails at import).
+# Updated by hand (Dependabot ignores numpy): change it here and in pyarrow-build.in, then regenerate both .txt
 numpy==2.5.4

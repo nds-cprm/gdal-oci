@@ -9,12 +9,16 @@ updates:
     github-actions:
       patterns: ["*"]
 
-# keeps the hashed virtualenv pins (requirements/gdal-build.in -> gdal-build.txt, pip-compile) up to date;
-# a numpy major upgrade needs care (see the comment in gdal-build.in)
+# keeps the hashed virtualenv pins (requirements/*.in -> *.txt, pip-compile) up to date.
+# numpy is pinned in gdal-build.in and pyarrow-build.in, which must agree (pyarrow-build.in has
+# "-c gdal-build.in"): a PR changing only one of them would break the build, so numpy is updated by hand,
+# in both files at once (see the comments in the .in files); its CVEs still show up in the CI scan
 - package-ecosystem: pip
   directory: /requirements
   schedule:
     interval: weekly
+  ignore:
+  - dependency-name: numpy
   groups:
     venv:
       patterns: ["*"]
