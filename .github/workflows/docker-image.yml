@@ -310,9 +310,11 @@ jobs:
         echo "Tags datadas: \`${RELEASE_PY_TAG}-${suffix}\`, \`${DEVEL_TAG}-${suffix}\` e \`${RELEASE_NOPY_TAG}-${suffix}\`" >> "$GITHUB_STEP_SUMMARY"
 
   # Starts the CI (docker-image.yml, workflow_dispatch) of the images built on ndscprm/gdal, now that the
-  # moving tags point to the new build. The GITHUB_TOKEN cannot start workflows in other repositories:
-  # DERIVED_IMAGES_TOKEN is a fine-grained token (or GitHub App token) with "Actions: read and write" on
-  # those repositories only. Without it the job only warns, so the base image publication is not affected
+  # moving tags point to the new build. The GITHUB_TOKEN cannot start workflows in other repositories, so
+  # each job gets a short-lived token of the organization's GitHub App (installed on those repositories),
+  # limited to its own repository and to "Actions: write". The App is set by the DERIVED_IMAGES_APP_CLIENT_ID
+  # variable and the DERIVED_IMAGES_APP_PRIVATE_KEY secret; without the variable the job only warns, so the
+  # publication of the base image is not affected
   dispatch:
     needs: merge
     if: github.event_name == 'schedule' || inputs.dispatch-derived
@@ -323,15 +325,30 @@ jobs:
     runs-on: ubuntu-24.04
     # nothing of the GITHUB_TOKEN is used
     permissions: {}
+    env:
+      REPOSITORY: ${{ github.repository_owner }}/${{ matrix.repository }}
     steps:
-    - name: Start the CI of ${{ matrix.repository }}
-      env:
-        GH_TOKEN: ${{ secrets.DERIVED_IMAGES_TOKEN }}
-        REPOSITORY: ${{ github.repository_owner }}/${{ matrix.repository }}
+    - name: GitHub App not configured
+      if: vars.DERIVED_IMAGES_APP_CLIENT_ID == ''
       run: |
-        if [ -z "$GH_TOKEN" ]; then
-          echo "::warning::DERIVED_IMAGES_TOKEN is not set: ${REPOSITORY} was not started"
-          exit 0
-        fi
+        echo "::warning::DERIVED_IMAGES_APP_CLIENT_ID is not set: ${REPOSITORY} was not started"
+
+    # revoked at the end of the job (skip-token-revoke is false by default)
+    - name: Create a GitHub App token for ${{ matrix.repository }}
+      id: app-token
+      if: vars.DERIVED_IMAGES_APP_CLIENT_ID != ''
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        client-id: ${{ vars.DERIVED_IMAGES_APP_CLIENT_ID }}
+        private-key: ${{ secrets.DERIVED_IMAGES_APP_PRIVATE_KEY }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ matrix.repository }}
+        permission-actions: write
+
+    - name: Start the CI of ${{ matrix.repository }}
+      if: steps.app-token.outcome == 'success'
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+      run: |
         gh workflow run docker-image.yml --repo "$REPOSITORY" --ref main
         echo "CI de \`${REPOSITORY}\` disparado" >> "$GITHUB_STEP_SUMMARY"
