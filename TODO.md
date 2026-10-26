@@ -41,7 +41,7 @@ O `docker-image.yml` e o `oci-image.yml` repetem a mesma lógica (build por dige
 - Avaliar se vale estender o `oci-image.yml` (ex.: `{version}` vindo de mais de um `ARG`, verificação extra no `scan`) para este repositório usá-lo também, e o teste das mudanças passar a ser o build da própria base.
 
 ### Imagem `devel` fora do scan
-O job `scan` verifica só o `release-py`. O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.
+O job `scan` verifica só o `release-py` e o `release-nopy`. O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.
 
 - Escanear também o `devel`, só como relatório (sem gate), ou com o mesmo gate.
 
