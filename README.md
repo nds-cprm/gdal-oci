@@ -470,6 +470,7 @@ As imagens derivadas (mapserver-oci, mapproxy-oci e pygeoapi-oci) não têm buil
 
 - O disparo só acontece se a base foi publicada. Se o build, o smoke test ou o gate de vulnerabilidades da base falhar, nenhuma tag é criada e as derivadas não são disparadas.
 - No rebuild semanal (`schedule`), o disparo é sempre feito. No disparo manual, depende da opção **dispatch-derived** (marcada por padrão); desmarque-a para testar a base sem reconstruir as derivadas.
+- O disparo leva as versões da base publicada nas entradas `gdal_version` e `python_version`, que o workflow da imagem derivada repassa como build args `GDAL_VERSION` e `PYTHON_VERSION`. Assim a imagem derivada é sempre construída sobre as tags que acabaram de sair daqui, inclusive depois de um upgrade do GDAL ou do Python. O `ARG GDAL_VERSION`/`ARG PYTHON_VERSION` do Dockerfile dela só vale para builds locais e disparos manuais sem essas entradas.
 - O `GITHUB_TOKEN` não dispara workflows de outros repositórios. Cada job do `dispatch` gera um token de curta duração de um **GitHub App da organização**, restrito ao repositório que vai disparar e à permissão *Actions: write*, e o revoga no fim do job.
 
 ### Cadastrando o GitHub App
@@ -498,8 +499,9 @@ Dispare o workflow em *Actions → Docker Image CI → Run workflow*, com **disp
 
 ### Manutenção
 
-- **Nova imagem derivada**: acrescente o repositório à matriz `repository` do job `dispatch` e inclua-o na instalação do App (*Organization settings → GitHub Apps → gdal-oci-dispatch → Configure → Repository access*). O repositório precisa ter um `.github/workflows/docker-image.yml` com `workflow_dispatch` no branch `main`.
+- **Nova imagem derivada**: acrescente o repositório à matriz `repository` do job `dispatch` e inclua-o na instalação do App (*Organization settings → GitHub Apps → gdal-oci-dispatch → Configure → Repository access*). O repositório precisa ter, no branch `main`, um `.github/workflows/docker-image.yml` com `workflow_dispatch` e as entradas `gdal_version` e `python_version`, repassadas ao workflow reutilizável em `build-args` como `GDAL_VERSION` e `PYTHON_VERSION` (veja o de qualquer imagem derivada), e um `Dockerfile` que monte as tags da `ndscprm/gdal` com esses dois `ARG`.
 - **Troca da chave**: gere uma chave nova na página do App, substitua o secret `DERIVED_IMAGES_APP_PRIVATE_KEY` e depois apague a chave antiga no App. A chave não expira; troque-a se houver suspeita de vazamento.
+- **Upgrade do GDAL ou do Python aqui**: as imagens derivadas passam a usar as tags novas no próprio disparo. Atualize depois o `ARG GDAL_VERSION`/`ARG PYTHON_VERSION` delas, para que builds locais e disparos manuais usem a mesma versão (no pygeoapi-oci, esse push também regenera os locks pelo `update-locks`).
 - **Desativar o disparo**: apague a variável `DERIVED_IMAGES_APP_CLIENT_ID` (o job passa a só emitir o aviso) ou suspenda a instalação do App.
 
 ### Quando o `dispatch` falha
@@ -512,6 +514,7 @@ Ele roda depois das tags da base já publicadas, então uma falha não afeta a `
 | Falha em *Create a GitHub App token*, com repositório não encontrado ou sem acesso | App não instalado naquele repositório |
 | Falha em *Start the CI*, com `HTTP 403` | App sem a permissão *Actions: Read and write*, ou permissão alterada e ainda não aprovada na instalação |
 | Falha em *Start the CI*, com `HTTP 404` ou workflow não encontrado | Repositório sem `.github/workflows/docker-image.yml`, ou o workflow sem `workflow_dispatch` no `main` |
+| Falha em *Start the CI*, com `HTTP 422` e `Unexpected inputs` | O workflow da imagem derivada não declara as entradas `gdal_version` e `python_version` no `workflow_dispatch` |
 
 Para repetir só o disparo, use *Re-run failed jobs* na execução do gdal-oci: o build da base não é refeito.
 
