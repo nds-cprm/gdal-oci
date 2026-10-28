@@ -247,10 +247,12 @@ jobs:
   merge:
     needs: [build, scan]
     runs-on: ubuntu-24.04
-    # base versions of the published tags, passed by the dispatch job to the derived images
+    # full names of the images just published, dated tag and digest (<tag>-<YYYYMMDD>@sha256:...), passed
+    # by the dispatch job to the derived images
     outputs:
-      gdal-version: ${{ steps.meta.outputs.gdal_version }}
-      python-version: ${{ steps.meta.outputs.python_version }}
+      image-devel: ${{ steps.tags.outputs.devel }}
+      image-py: ${{ steps.tags.outputs.release-py }}
+      image-nopy: ${{ steps.tags.outputs.release-nopy }}
     steps:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -268,8 +270,6 @@ jobs:
         echo "release_py=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
         echo "devel=${IMAGE}:${TAG}-devel" >> "$GITHUB_OUTPUT"
         echo "release_nopy=${IMAGE}:${GDAL_VERSION}-nopy" >> "$GITHUB_OUTPUT"
-        echo "gdal_version=${GDAL_VERSION}" >> "$GITHUB_OUTPUT"
-        echo "python_version=${PYTHON_VERSION}" >> "$GITHUB_OUTPUT"
 
     - name: Download digests
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -288,6 +288,7 @@ jobs:
         password: ${{ secrets.DOCKERHUB_TOKEN }}
 
     - name: Create multi-platform tags
+      id: tags
       env:
         DEVEL_TAG: ${{ steps.meta.outputs.devel }}
         RELEASE_PY_TAG: ${{ steps.meta.outputs.release_py }}
@@ -312,6 +313,9 @@ jobs:
           # shellcheck disable=SC2046
           docker buildx imagetools create -t "$tag" -t "$dated" $(printf "${IMAGE}@sha256:%s " $(ls "$variant"))
           docker buildx imagetools inspect "$dated"
+          # the dated tag pinned by the digest of its index, for the derived images
+          digest=$(docker buildx imagetools inspect "$dated" --format '{{.Manifest.Digest}}')
+          echo "${variant}=${dated}@${digest}" >> "$GITHUB_OUTPUT"
         done
         echo "Tags datadas: \`${RELEASE_PY_TAG}-${suffix}\`, \`${DEVEL_TAG}-${suffix}\` e \`${RELEASE_NOPY_TAG}-${suffix}\`" >> "$GITHUB_STEP_SUMMARY"
 
@@ -351,15 +355,23 @@ jobs:
         repositories: ${{ matrix.repository }}
         permission-actions: write
 
-    # the derived image is built on the tags just published: their versions go as the gdal_version and
-    # python_version inputs, which its workflow passes as the GDAL_VERSION / PYTHON_VERSION build args
+    # the derived image is built on the images just published: their full names (dated tag and digest) go
+    # as the image_devel, image_py and image_nopy inputs, which its workflow passes as the GDAL_IMAGE_DEVEL /
+    # GDAL_IMAGE_PY / GDAL_IMAGE_NOPY build args. Every derived workflow declares the three inputs, and
+    # uses those its Dockerfile needs
     - name: Start the CI of ${{ matrix.repository }}
       if: steps.app-token.outcome == 'success'
       env:
         GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        GDAL_VERSION: ${{ needs.merge.outputs.gdal-version }}
-        PYTHON_VERSION: ${{ needs.merge.outputs.python-version }}
+        IMAGE_DEVEL: ${{ needs.merge.outputs.image-devel }}
+        IMAGE_PY: ${{ needs.merge.outputs.image-py }}
+        IMAGE_NOPY: ${{ needs.merge.outputs.image-nopy }}
       run: |
         gh workflow run docker-image.yml --repo "$REPOSITORY" --ref main \
-          -f gdal_version="$GDAL_VERSION" -f python_version="$PYTHON_VERSION"
-        echo "CI de \`${REPOSITORY}\` disparado (GDAL ${GDAL_VERSION}, Python ${PYTHON_VERSION})" >> "$GITHUB_STEP_SUMMARY"
+          -f image_devel="$IMAGE_DEVEL" -f image_py="$IMAGE_PY" -f image_nopy="$IMAGE_NOPY"
+        {
+          echo "CI de \`${REPOSITORY}\` disparado com:"
+          echo "- \`${IMAGE_DEVEL}\`"
+          echo "- \`${IMAGE_PY}\`"
+          echo "- \`${IMAGE_NOPY}\`"
+        } >> "$GITHUB_STEP_SUMMARY"
