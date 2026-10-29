@@ -36,7 +36,7 @@ A `python:slim` traz 11 binários setuid/setgid (`su`, `mount`, `umount`, `passw
 - Alternativa ou complemento: recomendar `--security-opt no-new-privileges` no README.
 
 ### Análises antigas no code scanning
-Com a migração para o workflow reutilizável, as categorias de SARIF mudaram de `docker-scout-<arch>`, `grype-<arch>`, `docker-scout-nopy-<arch>` e `grype-nopy-<arch>` para `docker-scout-<variante>-<arch>` e `grype-<variante>-<arch>`. As análises das categorias antigas não são mais atualizadas, e os alertas delas continuam abertos.
+Com a migração para o workflow reutilizável, as categorias de SARIF mudaram de `docker-scout-<arch>`, `grype-<arch>`, `docker-scout-nopy-<arch>` e `grype-nopy-<arch>` para `trivy-<variante>-<arch>` e `grype-<variante>-<arch>` (o Docker Scout foi trocado pelo Trivy). Nas derivadas, as categorias `docker-scout-<variante>-<arch>` também ficaram órfãs. As análises das categorias antigas não são mais atualizadas, e os alertas delas continuam abertos.
 
 - Depois do primeiro build com as categorias novas, apagar as análises antigas: listar com `gh api repos/nds-cprm/gdal-oci/code-scanning/analyses --paginate -q '.[] | [.id, .category] | @tsv'` e apagar com `gh api -X DELETE "repos/nds-cprm/gdal-oci/code-scanning/analyses/<id>?confirm_delete=true"`. A API só apaga a análise mais recente de cada categoria por vez e devolve a seguinte em `next_analysis_url`/`confirm_delete_url`, então é preciso repetir até esvaziar a categoria.
 

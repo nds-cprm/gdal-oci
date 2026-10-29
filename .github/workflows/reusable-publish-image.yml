@@ -9,9 +9,9 @@
 #   build    one job per architecture on native runners; every variant is built by a single Bake call, so
 #            they share the stages they have in common (same build), then each variant's test runs.
 #            Images are pushed by digest only (no tag); with push: false they are only loaded and tested
-#   scan     Docker Scout and Grype on the variants with "scan": true, before any tag exists; reports go
-#            to code scanning, sbom-require checks the SBOM attestation, and fail-on-severity turns
-#            fixable vulnerabilities into a failure
+#   scan     Trivy and Grype on the variants with "scan": true, before any tag exists; reports go to code
+#            scanning, sbom-require checks the SBOM attestation, and fail-on-severity turns fixable
+#            vulnerabilities into a failure (Grype)
 #   merge    creates the multi-platform tags: the moving one (variant "tag", with {version}) and a dated
 #            one, <tag>-<YYYYMMDD> (UTC; .2, .3... for later builds on the same day, never overwritten);
 #            the images output gives each variant by full name, pinned by digest
@@ -19,7 +19,8 @@
 # A failed test or scan stops the publication: no tag is created.
 # The caller grants the permissions: contents: read and security-events: write (plus actions: read in
 # private repositories), and passes the DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets (not needed with
-# push: false).
+# push: false). The push token never reaches the scan job: it pulls the images anonymously, or with
+# DOCKERHUB_READ_TOKEN (read-only) when given.
 name: "Reusable: publish image"
 
 on:
@@ -119,6 +120,10 @@ on:
       DOCKERHUB_USERNAME:
         required: false
       DOCKERHUB_TOKEN:
+        required: false
+      # read-only Docker Hub token for the scan job (pull rate limit of authenticated users); optional,
+      # without it the scan pulls anonymously. Never the push token: the scanners run with it
+      DOCKERHUB_READ_TOKEN:
         required: false
     outputs:
       version:
@@ -361,7 +366,13 @@ jobs:
         if-no-files-found: error
         retention-days: 1
 
-  # Scans the variants with "scan": true of each architecture before any tag exists
+  # Scans the variants with "scan": true of each architecture before any tag exists. Two scanners:
+  #   Trivy  scans the image (Debian and Python packages); it does not match by CPE, so it does not see the
+  #          components built from source (GDAL, Arrow, Thrift, CPython...), and it does not recognize the
+  #          Debian packages in the BuildKit SBOM. Report only
+  #   Grype  scans the BuildKit SBOM attestation, the only place with the CycloneDX files of ndscprm/gdal in
+  #          /opt/geosgb/share/sbom, and matches those components by CPE. Report and gate
+  # No Docker Hub push token here: the scanners are third-party code with network access
   scan:
     needs: [prepare, build]
     if: inputs.push && needs.prepare.outputs.scan != '[]'
@@ -377,6 +388,8 @@ jobs:
       security-events: write
     env:
       IMAGE: ${{ inputs.image }}
+      # secrets cannot be read in a step if
+      HAS_READ_TOKEN: ${{ secrets.DOCKERHUB_READ_TOKEN != '' }}
     steps:
     - name: Checkout
       uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -392,15 +405,13 @@ jobs:
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-    # Docker Scout requires a Docker Hub login
-    - name: Login to Docker Hub
+    - name: Login to Docker Hub (read-only token)
+      if: env.HAS_READ_TOKEN == 'true'
       uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
       with:
         username: ${{ secrets.DOCKERHUB_USERNAME }}
-        password: ${{ secrets.DOCKERHUB_TOKEN }}
+        password: ${{ secrets.DOCKERHUB_READ_TOKEN }}
 
-    # Grype scans the BuildKit SBOM attestation, not the image: only the attestation includes the CycloneDX
-    # files of ndscprm/gdal in /opt/geosgb/share/sbom (GDAL, Arrow, Thrift...), which Scout ignores
     - name: Get the SBOM attestation of the ${{ matrix.variant }} image
       id: sbom
       working-directory: ${{ runner.temp }}/digests/${{ matrix.variant }}
@@ -427,21 +438,49 @@ jobs:
         done
         exit "$missing"
 
-    - name: Analyze with Docker Scout
-      uses: docker/scout-action@a4119c5a8c5076236a54e4ce99531f7e4dd2ef84 # v1.27.0
-      with:
-        command: cves
-        image: ${{ steps.sbom.outputs.ref }}
-        platform: linux/${{ matrix.arch }}
-        sarif-file: scout.sarif
-        summary: true
+    # The release binary, not aquasecurity/trivy-action or setup-trivy: their tags were rewritten with a
+    # credential stealer in March 2026 (GHSA-69fq-xp46-6x23). Pinned version, from an immutable GitHub
+    # release, checked against the SHA-256 written here (not against the checksums file downloaded with
+    # it). Dependabot does not update it: to upgrade, take a release at least two weeks old, marked
+    # immutable, and its digest from the GitHub API (releases/tags/<tag>, assets[].digest)
+    - name: Install Trivy
+      env:
+        TRIVY_VERSION: 0.76.0
+        TRIVY_SHA256: e24b1c51293c1b15e4ba8d45bbc7891ba053f90278ec2698f3562c993e145fe7
+      working-directory: ${{ runner.temp }}
+      run: |
+        archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+        curl -fsSL --retry 3 -o "$archive" \
+          "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/${archive}"
+        echo "${TRIVY_SHA256}  ${archive}" | sha256sum -c
+        mkdir trivy-bin
+        tar -xzf "$archive" -C trivy-bin trivy
+        "${RUNNER_TEMP}/trivy-bin/trivy" --version
+
+    # full report (all severities, fixed or not) for code scanning; the vulnerability database comes from
+    # mirror.gcr.io on each run. JAR files are skipped: one of them makes Trivy download its Java database
+    # (about 1 GB), and Grype already matches them from the SBOM
+    - name: Analyze with Trivy
+      env:
+        REF: ${{ steps.sbom.outputs.ref }}
+        ARCH: ${{ matrix.arch }}
+        VEX: ${{ inputs.vex }}
+      run: |
+        args=()
+        if [ -n "$VEX" ]; then
+          args+=(--vex "$VEX")
+        fi
+        "${RUNNER_TEMP}/trivy-bin/trivy" image --image-src remote --platform "linux/${ARCH}" \
+          --scanners vuln --skip-files "**/*.jar" --disable-telemetry --skip-version-check --no-progress \
+          --timeout 30m \
+          --format sarif --output trivy.sarif "${args[@]}" "$REF"
 
     # one category per variant and architecture, so an upload does not replace the others' results
-    - name: Upload Docker Scout SARIF result
+    - name: Upload Trivy SARIF result
       uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
       with:
-        sarif_file: scout.sarif
-        category: docker-scout-${{ matrix.variant }}-${{ matrix.arch }}
+        sarif_file: trivy.sarif
+        category: trivy-${{ matrix.variant }}-${{ matrix.arch }}
 
     # full report (all severities, fixed or not) for code scanning
     - name: Analyze with Grype

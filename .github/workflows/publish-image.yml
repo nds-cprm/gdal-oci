@@ -78,8 +78,8 @@ jobs:
       variants: ${{ needs.meta.outputs.variants }}
       vex: vex/gdal-oci.openvex.json
       fail-on-severity: critical
-      # Docker Scout ignores the components built from source (GDAL, Arrow, Thrift...): they only have
-      # generic purls. Grype matches them by CPE from the CycloneDX files in /opt/geosgb/share/sbom, which
+      # Trivy ignores the components built from source (GDAL, Arrow, Thrift...): they only have generic
+      # purls. Grype matches them by CPE from the CycloneDX files in /opt/geosgb/share/sbom, which
       # only the SBOM attestation includes; thrift being there shows they were picked up
       sbom-require: thrift
 

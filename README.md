@@ -407,7 +407,7 @@ O [reusable-publish-image.yml](.github/workflows/reusable-publish-image.yml) é 
 
 1. **`prepare`**: resolve a versão (entrada `version` ou a linha `ARG <version-arg>=<versão>` do Dockerfile, validada por `version-pattern`) e confere as variantes.
 2. **`build`**: um job por arquitetura, em runner nativo (`amd64` em `ubuntu-24.04` e `arm64` em `ubuntu-24.04-arm`, sem QEMU). Todas as variantes saem de uma única chamada do Bake, então os estágios que elas têm em comum são construídos uma vez só: a `-devel` e a release saem do mesmo build. As imagens são publicadas só por digest, com attestations de SBOM e de provenance, e o `test` de cada variante roda no próprio runner.
-3. **`scan`**: Docker Scout e Grype nas variantes com `"scan": true`, antes de existir qualquer tag. Os relatórios vão para o code scanning (categorias `docker-scout-<variante>-<arch>` e `grype-<variante>-<arch>`). O Grype analisa a attestation de SBOM, que inclui os CycloneDX desta imagem em `/opt/geosgb/share/sbom`, então também enxerga o GDAL, o Arrow e o Thrift herdados, que o Scout ignora. Com `sbom-require`, o job falha se a attestation não tiver um dos pacotes listados. Com `fail-on-severity`, uma vulnerabilidade com correção disponível, dessa severidade ou acima e fora do VEX, falha o job.
+3. **`scan`**: Trivy e Grype nas variantes com `"scan": true`, antes de existir qualquer tag. Os relatórios vão para o code scanning (categorias `trivy-<variante>-<arch>` e `grype-<variante>-<arch>`). O Trivy analisa a imagem (pacotes Debian e Python). O Grype analisa a attestation de SBOM, que inclui os CycloneDX desta imagem em `/opt/geosgb/share/sbom`, então também enxerga o GDAL, o Arrow e o Thrift herdados, que o Trivy não casa (ele não usa CPE). O job não recebe o token de push do Docker Hub: lê as imagens sem login, ou com o secret opcional `DOCKERHUB_READ_TOKEN`, um token só de leitura. Com `sbom-require`, o job falha se a attestation não tiver um dos pacotes listados. Com `fail-on-severity`, uma vulnerabilidade com correção disponível, dessa severidade ou acima e fora do VEX, falha o job.
 4. **`merge`**: cria as tags multiplataforma: a móvel (`tag` da variante) e a datada, `<tag>-<AAAAMMDD>` (UTC; `.2`, `.3`... nos builds seguintes do mesmo dia, nunca sobrescrita). O sufixo é calculado sobre a primeira variante e vale para todas.
 
 Uma falha no teste ou no scan de qualquer variante ou arquitetura impede a criação das tags. Com `push: false` (pull requests), as imagens só são construídas, carregadas no runner e testadas: sem scan, sem tags e sem os secrets.
@@ -427,6 +427,8 @@ jobs:
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+      # opcional: token só de leitura para o scan (sem ele, o scan lê as imagens sem login)
+      # DOCKERHUB_READ_TOKEN: ${{ secrets.DOCKERHUB_READ_TOKEN }}
     with:
       image: docker.io/ndscprm/mapserver
       version-arg: MAPSERVER_VERSION
