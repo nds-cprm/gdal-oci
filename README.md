@@ -466,7 +466,7 @@ Campos de cada variante:
 | `scan` | `true` para analisar a variante no job `scan` |
 | `cache-to` | `true` na variante que grava o cache do GHA (`mode=max`). Dê à variante que passa por todos os estágios. Se nenhuma tiver, é a última |
 | `no-cache-filters` | Estágios sempre reconstruídos, mesmo com cache (ex.: o do `apt-get install`, para pegar as correções do Debian) |
-| `test` | Comando `bash` (`-euo pipefail`) rodado no runner depois do build, no checkout do repositório que chamou, com `IMAGE_REF` (a imagem por digest, ou `<image>:ci-<variante>-<arch>` com `push: false`), `VARIANT` e `ARCH` definidos |
+| `test` | Comando `bash` (`-euo pipefail`) rodado no runner depois do build, no checkout do repositório que chamou, com `IMAGE_REF` (a imagem por digest, ou `<image>:ci-<variante>-<arch>` com `push: false`), `VARIANT` e `ARCH` definidos. A imagem já está no armazenamento local do runner (com `push: true`, o workflow faz `docker pull` dela antes), então comandos que não baixam imagens, como `docker image inspect`, funcionam |
 
 O cache do GHA e os artifacts de digests levam o nome da imagem (`<nome>-<arch>`), então um repositório pode chamar o workflow para mais de uma imagem. As actions são fixadas por SHA de commit e atualizadas pelo Dependabot deste repositório. Uma mudança no workflow vale para todos os projetos que o chamam pelo mesmo `ref`: verifique-os antes de publicá-la.
 

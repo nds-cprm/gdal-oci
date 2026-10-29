@@ -19,7 +19,7 @@ Workflow `workflow_call` usado pelas imagens derivadas (mapserver-oci, mapproxy-
 - **`push: false`**: saída `type=docker` (`<image>:ci-<variante>-<arch>`), sem attestations (o exportador `docker` não as aceita), sem login, sem `scan` e sem `merge`.
 - **Nomes por imagem**: cache do GHA e artifacts de digests usam `<nome da imagem>-<arch>` (`slug` do `prepare`), não só `<arch>`.
 - **Gate opcional**: sem `fail-on-severity`, o scan só reporta (a política do mapserver-oci e do mapproxy-oci); com ele, igual ao gate deste repositório, na severidade escolhida.
-- **Testes**: o campo `test` é executado com `bash -euo pipefail -c`, no checkout do chamador (o `actions/checkout` de um workflow reutilizável faz checkout do repositório que chamou), com `IMAGE_REF`, `VARIANT` e `ARCH`.
+- **Testes**: o campo `test` é executado com `bash -euo pipefail -c`, no checkout do chamador (o `actions/checkout` de um workflow reutilizável faz checkout do repositório que chamou), com `IMAGE_REF`, `VARIANT` e `ARCH`. Com `push: true`, a imagem foi enviada só por digest e não fica no armazenamento local, então o workflow faz `docker pull` dela antes do teste. Sem isso, um `docker image inspect` antes de qualquer `docker run` falha com `No such image` (aconteceu no mapproxy e no pygeoapi).
 
 Ao mudar o workflow: rode o `actionlint`, teste os blocos `run` localmente quando mexer em `jq`/shell (extraia-os do YAML e rode com as variáveis de ambiente do passo) e lembre que a mudança vale na hora para todos os chamadores em `@main`.
 

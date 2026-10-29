@@ -316,14 +316,21 @@ jobs:
           fi
         done
 
-    # on the native runner of each architecture; a failure stops scan and merge, so a broken image gets no tag
+    # on the native runner of each architecture; a failure stops scan and merge, so a broken image gets no tag.
+    # An image pushed by digest is not in the local image store: it is pulled first, so the test finds it
+    # with commands that do not pull (docker image inspect), as it does with push: false
     - name: Test images
       env:
         REFS: ${{ toJSON(steps.digests.outputs) }}
+        PUSH: ${{ inputs.push }}
       run: |
         for name in $(jq -r '.[] | select(.test != "") | .name' <<< "$VARIANTS"); do
           echo "::group::test ${name}"
-          IMAGE_REF=$(jq -er --arg n "$name" '.[$n]' <<< "$REFS") \
+          ref=$(jq -er --arg n "$name" '.[$n]' <<< "$REFS")
+          if [ "$PUSH" = true ]; then
+            docker pull --quiet "$ref"
+          fi
+          IMAGE_REF=$ref \
           VARIANT=$name \
             bash -euo pipefail -c "$(jq -r --arg n "$name" '.[] | select(.name == $n) | .test' <<< "$VARIANTS")"
           echo "::endgroup::"
