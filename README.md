@@ -99,7 +99,7 @@ Ao mudar o `GDAL_VERSION`, passe também o `GDAL_SHA256` correspondente (veja [V
 
 O build compila o Apache Arrow e o GDAL e leva de 15 a 25 minutos, conforme o número de núcleos da máquina. As arquiteturas suportadas são `linux/amd64` e `linux/arm64` (o Oracle Instant Client tem as duas), e o CI faz o build e o smoke test de ambas.
 
-Os comandos acima servem para testes locais. As imagens publicadas devem sair do [CI](.github/workflows/docker-image.yml): um `docker push` manual gera uma imagem sem attestations de SBOM e provenance, que não passou pelo smoke test nem pela verificação de vulnerabilidades e não tem tag datada.
+Os comandos acima servem para testes locais. As imagens publicadas devem sair do [CI](.github/workflows/publish-image.yml): um `docker push` manual gera uma imagem sem attestations de SBOM e provenance, que não passou pelo smoke test nem pela verificação de vulnerabilidades e não tem tag datada.
 
 ## Usando o `release-py` como base
 
@@ -403,12 +403,12 @@ O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do reposi
 
 ## Workflow reutilizável
 
-O [oci-image.yml](.github/workflows/oci-image.yml) é um workflow reutilizável (`workflow_call`) para as imagens construídas sobre esta, como a [mapserver-oci](https://github.com/nds-cprm/mapserver-oci), a [mapproxy-oci](https://github.com/nds-cprm/mapproxy-oci) e a [pygeoapi-oci](https://github.com/nds-cprm/pygeoapi-oci). Ele segue o modelo do CI desta imagem:
+O [reusable-publish-image.yml](.github/workflows/reusable-publish-image.yml) é um workflow reutilizável (`workflow_call`) que constrói, testa, analisa e publica uma imagem. É usado pelas imagens construídas sobre esta, como a [mapserver-oci](https://github.com/nds-cprm/mapserver-oci), a [mapproxy-oci](https://github.com/nds-cprm/mapproxy-oci) e a [pygeoapi-oci](https://github.com/nds-cprm/pygeoapi-oci), e pelo próprio CI desta imagem ([publish-image.yml](.github/workflows/publish-image.yml)), então cada build da base também o testa. Jobs:
 
 1. **`prepare`**: resolve a versão (entrada `version` ou a linha `ARG <version-arg>=<versão>` do Dockerfile, validada por `version-pattern`) e confere as variantes.
 2. **`build`**: um job por arquitetura, em runner nativo (`amd64` em `ubuntu-24.04` e `arm64` em `ubuntu-24.04-arm`, sem QEMU). Todas as variantes saem de uma única chamada do Bake, então os estágios que elas têm em comum são construídos uma vez só: a `-devel` e a release saem do mesmo build. As imagens são publicadas só por digest, com attestations de SBOM e de provenance, e o `test` de cada variante roda no próprio runner.
-3. **`scan`**: Docker Scout e Grype nas variantes com `"scan": true`, antes de existir qualquer tag. Os relatórios vão para o code scanning (categorias `docker-scout-<variante>-<arch>` e `grype-<variante>-<arch>`). O Grype analisa a attestation de SBOM, que inclui os CycloneDX desta imagem em `/opt/geosgb/share/sbom`, então também enxerga o GDAL, o Arrow e o Thrift herdados, que o Scout ignora. Com `fail-on-severity`, uma vulnerabilidade com correção disponível, dessa severidade ou acima e fora do VEX, falha o job.
-4. **`merge`**: cria as tags multiplataforma: a móvel (`tag` da variante) e a datada, `<tag>-<AAAAMMDD>` (UTC; `.2`, `.3`... nos builds seguintes do mesmo dia, nunca sobrescrita).
+3. **`scan`**: Docker Scout e Grype nas variantes com `"scan": true`, antes de existir qualquer tag. Os relatórios vão para o code scanning (categorias `docker-scout-<variante>-<arch>` e `grype-<variante>-<arch>`). O Grype analisa a attestation de SBOM, que inclui os CycloneDX desta imagem em `/opt/geosgb/share/sbom`, então também enxerga o GDAL, o Arrow e o Thrift herdados, que o Scout ignora. Com `sbom-require`, o job falha se a attestation não tiver um dos pacotes listados. Com `fail-on-severity`, uma vulnerabilidade com correção disponível, dessa severidade ou acima e fora do VEX, falha o job.
+4. **`merge`**: cria as tags multiplataforma: a móvel (`tag` da variante) e a datada, `<tag>-<AAAAMMDD>` (UTC; `.2`, `.3`... nos builds seguintes do mesmo dia, nunca sobrescrita). O sufixo é calculado sobre a primeira variante e vale para todas.
 
 Uma falha no teste ou no scan de qualquer variante ou arquitetura impede a criação das tags. Com `push: false` (pull requests), as imagens só são construídas, carregadas no runner e testadas: sem scan, sem tags e sem os secrets.
 
@@ -420,7 +420,7 @@ permissions:
 
 jobs:
   image:
-    uses: nds-cprm/gdal-oci/.github/workflows/oci-image.yml@main
+    uses: nds-cprm/gdal-oci/.github/workflows/reusable-publish-image.yml@main
     permissions:
       contents: read
       security-events: write   # SARIF para o code scanning (em repositório privado, também actions: read)
@@ -453,6 +453,7 @@ jobs:
 | `push` | `true` | `false` só constrói e testa |
 | `dated-tags` | `true` | Cria também as tags `<tag>-<AAAAMMDD>` |
 | `vex` | vazio | Arquivo OpenVEX para o Grype, relativo à raiz do repositório |
+| `sbom-require` | vazio | Pacotes que precisam estar na attestation de SBOM de cada variante escaneada, um por linha (ex.: `thrift`, um dos componentes dos CycloneDX desta imagem). Um ausente falha o scan |
 | `fail-on-severity` | vazio | `negligible`, `low`, `medium`, `high` ou `critical`: uma vulnerabilidade com correção disponível nessa severidade ou acima falha o scan. Vazio só reporta |
 | `runners` | amd64 e arm64 nativos | Array JSON de `{"arch", "runner"}`, um job de build para cada |
 
@@ -468,11 +469,19 @@ Campos de cada variante:
 | `no-cache-filters` | Estágios sempre reconstruídos, mesmo com cache (ex.: o do `apt-get install`, para pegar as correções do Debian) |
 | `test` | Comando `bash` (`-euo pipefail`) rodado no runner depois do build, no checkout do repositório que chamou, com `IMAGE_REF` (a imagem por digest, ou `<image>:ci-<variante>-<arch>` com `push: false`), `VARIANT` e `ARCH` definidos. A imagem já está no armazenamento local do runner (com `push: true`, o workflow faz `docker pull` dela antes), então comandos que não baixam imagens, como `docker image inspect`, funcionam |
 
+Saídas:
+
+| Saída | Descrição |
+|---|---|
+| `version` | Versão construída |
+| `tags` | Array JSON com as tags criadas (vazio com `push: false`) |
+| `images` | Objeto JSON, variante → imagem criada, fixada pelo digest do índice: `<imagem>:<tag>-<AAAAMMDD>@sha256:...` (sem tags datadas, `<imagem>:<tag>@sha256:...`). O CI desta imagem a usa para disparar as derivadas |
+
 O cache do GHA e os artifacts de digests levam o nome da imagem (`<nome>-<arch>`), então um repositório pode chamar o workflow para mais de uma imagem. As actions são fixadas por SHA de commit e atualizadas pelo Dependabot deste repositório. Uma mudança no workflow vale para todos os projetos que o chamam pelo mesmo `ref`: verifique-os antes de publicá-la.
 
 ## Rebuild das imagens derivadas
 
-As imagens derivadas (mapserver-oci, mapproxy-oci e pygeoapi-oci) não têm build agendado próprio. Quem as reconstrói é o CI deste repositório: depois que o job `merge` publica as tags novas da `ndscprm/gdal`, o job `dispatch` do [docker-image.yml](.github/workflows/docker-image.yml) dispara o `docker-image.yml` de cada uma (`workflow_dispatch` no branch `main`). Uma base nova invalida todas as camadas, então cada imagem derivada é reconstruída por inteiro, com os pacotes atuais do Debian e do PyPI.
+As imagens derivadas (mapserver-oci, mapproxy-oci e pygeoapi-oci) não têm build agendado próprio. Quem as reconstrói é o CI deste repositório: depois que o workflow reutilizável publica as tags novas da `ndscprm/gdal`, o job `dispatch` do [publish-image.yml](.github/workflows/publish-image.yml) dispara o `publish-image.yml` de cada uma (`workflow_dispatch` no branch `main`). Uma base nova invalida todas as camadas, então cada imagem derivada é reconstruída por inteiro, com os pacotes atuais do Debian e do PyPI.
 
 - O disparo só acontece se a base foi publicada. Se o build, o smoke test ou o gate de vulnerabilidades da base falhar, nenhuma tag é criada e as derivadas não são disparadas.
 - No rebuild semanal (`schedule`), o disparo é sempre feito. No disparo manual, depende da opção **dispatch-derived** (marcada por padrão); desmarque-a para testar a base sem reconstruir as derivadas.
@@ -501,11 +510,11 @@ Sem a variável `DERIVED_IMAGES_APP_CLIENT_ID`, o job `dispatch` só emite um av
 
 ### Testando
 
-Dispare o workflow em *Actions → Docker Image CI → Run workflow*, com **dispatch-derived** marcada. O build completo da base roda antes; ao final, o job `dispatch` lista no resumo os repositórios disparados, e cada um aparece em execução na aba *Actions* do repositório derivado, com o evento `workflow_dispatch`.
+Dispare o workflow em *Actions → Publish image → Run workflow*, com **dispatch-derived** marcada. O build completo da base roda antes; ao final, o job `dispatch` lista no resumo os repositórios disparados, e cada um aparece em execução na aba *Actions* do repositório derivado, com o evento `workflow_dispatch`.
 
 ### Manutenção
 
-- **Nova imagem derivada**: acrescente o repositório à matriz `repository` do job `dispatch` e inclua-o na instalação do App (*Organization settings → GitHub Apps → gdal-oci-dispatch → Configure → Repository access*). O repositório precisa ter, no branch `main`, um `.github/workflows/docker-image.yml` com `workflow_dispatch` e as entradas `image_devel`, `image_py` e `image_nopy` (as três, mesmo que use só algumas), repassadas ao workflow reutilizável em `build-args` como `GDAL_IMAGE_DEVEL`, `GDAL_IMAGE_PY` e `GDAL_IMAGE_NOPY` (veja o de qualquer imagem derivada), e um `Dockerfile` com esses `ARG` nos `FROM`, com as tags móveis como padrão.
+- **Nova imagem derivada**: acrescente o repositório à matriz `repository` do job `dispatch` e inclua-o na instalação do App (*Organization settings → GitHub Apps → gdal-oci-dispatch → Configure → Repository access*). O repositório precisa ter, no branch `main`, um `.github/workflows/publish-image.yml` com `workflow_dispatch` e as entradas `image_devel`, `image_py` e `image_nopy` (as três, mesmo que use só algumas), repassadas ao workflow reutilizável em `build-args` como `GDAL_IMAGE_DEVEL`, `GDAL_IMAGE_PY` e `GDAL_IMAGE_NOPY` (veja o de qualquer imagem derivada), e um `Dockerfile` com esses `ARG` nos `FROM`, com as tags móveis como padrão.
 - **Troca da chave**: gere uma chave nova na página do App, substitua o secret `DERIVED_IMAGES_APP_PRIVATE_KEY` e depois apague a chave antiga no App. A chave não expira; troque-a se houver suspeita de vazamento.
 - **Upgrade do GDAL ou do Python aqui**: as imagens derivadas passam a usar as tags novas no próprio disparo. Atualize depois os `ARG GDAL_IMAGE_*` delas (as tags móveis da versão nova), para que builds locais e disparos manuais usem a mesma versão. No pygeoapi-oci, os locks são resolvidos sobre uma imagem `-devel`, gravada no cabeçalho deles; depois de uma troca do GDAL ou do Python, rode lá o `update-locks` à mão com o `image_devel` novo (tag datada e digest).
 - **Desativar o disparo**: apague a variável `DERIVED_IMAGES_APP_CLIENT_ID` (o job passa a só emitir o aviso) ou suspenda a instalação do App.
@@ -519,7 +528,7 @@ Ele roda depois das tags da base já publicadas, então uma falha não afeta a `
 | Falha em *Create a GitHub App token*, com erro de chave ou de autenticação | Secret `DERIVED_IMAGES_APP_PRIVATE_KEY` ausente, incompleto ou de outro App, ou Client ID errado |
 | Falha em *Create a GitHub App token*, com repositório não encontrado ou sem acesso | App não instalado naquele repositório |
 | Falha em *Start the CI*, com `HTTP 403` | App sem a permissão *Actions: Read and write*, ou permissão alterada e ainda não aprovada na instalação |
-| Falha em *Start the CI*, com `HTTP 404` ou workflow não encontrado | Repositório sem `.github/workflows/docker-image.yml`, ou o workflow sem `workflow_dispatch` no `main` |
+| Falha em *Start the CI*, com `HTTP 404` ou workflow não encontrado | Repositório sem `.github/workflows/publish-image.yml`, ou o workflow sem `workflow_dispatch` no `main` |
 | Falha em *Start the CI*, com `HTTP 422` e `Unexpected inputs` | O workflow da imagem derivada não declara as entradas `image_devel`, `image_py` e `image_nopy` no `workflow_dispatch` |
 
 Para repetir só o disparo, use *Re-run failed jobs* na execução do gdal-oci: o build da base não é refeito.

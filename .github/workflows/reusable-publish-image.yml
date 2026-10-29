@@ -1,7 +1,8 @@
 # Reusable workflow: builds, tests, scans and publishes a multi-platform image made of one or more
 # variants (Dockerfile stages), e.g. a release and its -devel. Used by the images built on top of
-# ndscprm/gdal (mapserver-oci, mapproxy-oci, pygeoapi-oci); see the "Workflow reutilizável" section of
-# the README for the inputs and an example.
+# ndscprm/gdal (mapserver-oci, mapproxy-oci, pygeoapi-oci, by @main) and by the base image itself
+# (publish-image.yml of this repository); see the "Workflow reutilizável" section of the README for the
+# inputs and an example.
 #
 # Jobs:
 #   prepare  resolves the version (input or ARG <version-arg> of the Dockerfile) and checks the variants
@@ -9,15 +10,17 @@
 #            they share the stages they have in common (same build), then each variant's test runs.
 #            Images are pushed by digest only (no tag); with push: false they are only loaded and tested
 #   scan     Docker Scout and Grype on the variants with "scan": true, before any tag exists; reports go
-#            to code scanning, and fail-on-severity turns fixable vulnerabilities into a failure
+#            to code scanning, sbom-require checks the SBOM attestation, and fail-on-severity turns
+#            fixable vulnerabilities into a failure
 #   merge    creates the multi-platform tags: the moving one (variant "tag", with {version}) and a dated
-#            one, <tag>-<YYYYMMDD> (UTC; .2, .3... for later builds on the same day, never overwritten)
+#            one, <tag>-<YYYYMMDD> (UTC; .2, .3... for later builds on the same day, never overwritten);
+#            the images output gives each variant by full name, pinned by digest
 #
 # A failed test or scan stops the publication: no tag is created.
 # The caller grants the permissions: contents: read and security-events: write (plus actions: read in
 # private repositories), and passes the DOCKERHUB_USERNAME / DOCKERHUB_TOKEN secrets (not needed with
 # push: false).
-name: OCI image
+name: "Reusable: publish image"
 
 on:
   workflow_call:
@@ -91,6 +94,14 @@ on:
         required: false
         type: string
         default: ""
+      sbom-require:
+        description: >-
+          Package names that must be in the SBOM attestation of every scanned variant, one per line (e.g. a
+          component of the CycloneDX files of ndscprm/gdal in /opt/geosgb/share/sbom, which only the
+          attestation includes); a missing one fails the scan, so no tag is created
+        required: false
+        type: string
+        default: ""
       fail-on-severity:
         description: >-
           Fail the scan (no tags) on a vulnerability with a fix available at or above this severity
@@ -116,6 +127,11 @@ on:
       tags:
         description: JSON array of the tags created (empty with push false)
         value: ${{ jobs.merge.outputs.tags }}
+      images:
+        description: >-
+          JSON object, variant name -> image created, pinned by the digest of its index:
+          <image>:<tag>-<YYYYMMDD>@sha256:... (<image>:<tag>@sha256:... without dated tags; empty with push false)
+        value: ${{ jobs.merge.outputs.images }}
 
 # least privilege for the GITHUB_TOKEN; jobs that need more ask for it
 permissions:
@@ -395,6 +411,22 @@ jobs:
         docker buildx imagetools inspect "$ref" --format '{{ json .SBOM }}' \
           | jq -e 'if has("SPDX") then .SPDX else (to_entries[0].value.SPDX) end' > "${RUNNER_TEMP}/image.spdx.json"
 
+    - name: Check the packages required in the SBOM
+      if: inputs.sbom-require != ''
+      env:
+        SBOM_REQUIRE: ${{ inputs.sbom-require }}
+      run: |
+        missing=0
+        for name in $SBOM_REQUIRE; do
+          if jq -e --arg n "$name" 'any(.packages[]?; .name == $n)' "${RUNNER_TEMP}/image.spdx.json" > /dev/null; then
+            echo "${name}: in the SBOM"
+          else
+            echo "::error::${name} is not in the SBOM attestation"
+            missing=1
+          fi
+        done
+        exit "$missing"
+
     - name: Analyze with Docker Scout
       uses: docker/scout-action@a4119c5a8c5076236a54e4ce99531f7e4dd2ef84 # v1.27.0
       with:
@@ -448,6 +480,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       tags: ${{ steps.tags.outputs.tags }}
+      images: ${{ steps.tags.outputs.images }}
     env:
       IMAGE: ${{ inputs.image }}
     steps:
@@ -492,19 +525,28 @@ jobs:
           done
         fi
         created=()
+        images='{}'
         for name in $names; do
           tag=$(tag_of "$name")
           args=(-t "${IMAGE}:${tag}")
           created+=("${IMAGE}:${tag}")
+          # the image of this build: the dated tag, which is never overwritten, or else the moving one
+          own="${IMAGE}:${tag}"
           if [ "$DATED_TAGS" = true ]; then
-            args+=(-t "${IMAGE}:${tag}-${suffix}")
-            created+=("${IMAGE}:${tag}-${suffix}")
+            own="${IMAGE}:${tag}-${suffix}"
+            args+=(-t "$own")
+            created+=("$own")
           fi
           # shellcheck disable=SC2046
           docker buildx imagetools create "${args[@]}" $(printf "${IMAGE}@sha256:%s " $(ls "$name"))
           docker buildx imagetools inspect "${IMAGE}:${tag}"
+          digest=$(docker buildx imagetools inspect "$own" --format '{{.Manifest.Digest}}')
+          images=$(jq -c --arg n "$name" --arg ref "${own}@${digest}" '.[$n] = $ref' <<< "$images")
         done
-        echo "tags=$(printf '%s\n' "${created[@]}" | jq -Rcn '[inputs]')" >> "$GITHUB_OUTPUT"
+        {
+          echo "tags=$(printf '%s\n' "${created[@]}" | jq -Rcn '[inputs]')"
+          echo "images=${images}"
+        } >> "$GITHUB_OUTPUT"
         {
           echo "### Tags"
           # shellcheck disable=SC2016 # the backticks are Markdown

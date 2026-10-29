@@ -15,17 +15,17 @@ As imagens não definem `USER`, então rodam como root, e as imagens derivadas h
 ### Validar no CI os PRs do Dependabot
 O workflow só roda manualmente ou pelo agendamento semanal (`push`/`pull_request` comentados), então os PRs do Dependabot (actions e `requirements/`) podem ser aceitos sem build nem smoke test. Uma quebra só aparece no build agendado seguinte, que nesse caso não publica tags, mas a imagem fica sem atualização até a correção.
 
-- Adicionar um gatilho `pull_request` que rode só o `build` sem push (`push=false` ou `load`) e o smoke test, sem os jobs `scan` e `merge`.
+- Adicionar ao [publish-image.yml](.github/workflows/publish-image.yml) um gatilho `pull_request` que chame o reutilizável com `push: false` (só build e smoke test, sem scan, tags, secrets nem `dispatch`).
 
 ### Tag datada robusta a falhas do registry
-No job `merge`, o laço que escolhe o sufixo da tag datada (`<AAAAMMDD>`, `.2`, `.3`...) trata qualquer falha do `docker buildx imagetools inspect` como "a tag não existe". Uma falha momentânea do registry para uma tag que existe faria ela ser sobrescrita. O mesmo laço está no `merge` do [oci-image.yml](.github/workflows/oci-image.yml).
+No job `merge` do [reusable-publish-image.yml](.github/workflows/reusable-publish-image.yml), o laço que escolhe o sufixo da tag datada (`<AAAAMMDD>`, `.2`, `.3`...) trata qualquer falha do `docker buildx imagetools inspect` como "a tag não existe". Uma falha momentânea do registry para uma tag que existe faria ela ser sobrescrita. O laço vale para esta imagem e para as derivadas.
 
-- Distinguir "not found" de outros erros (ex.: checar a mensagem ou o código de retorno) e falhar o job nos demais casos, nos dois workflows.
+- Distinguir "not found" de outros erros (ex.: checar a mensagem ou o código de retorno) e falhar o job nos demais casos.
 
 ### Versionar o workflow reutilizável
-Os projetos chamam o [oci-image.yml](.github/workflows/oci-image.yml) por `@main`, então qualquer commit no `main` muda o CI de todos na hora, sem revisão do lado deles.
+As imagens derivadas chamam o [reusable-publish-image.yml](.github/workflows/reusable-publish-image.yml) por `@main`, então qualquer commit no `main` muda o CI de todas na hora, sem revisão do lado delas. Esta imagem usa a cópia do mesmo commit (`./.github/workflows/...`), então o build da base testa cada mudança, mas só no próximo run.
 
-- Depois do primeiro uso real, criar uma tag (ex.: `oci-image-v1`) e trocar os `uses:` dos projetos por ela, ou pelo SHA do commit com a tag em comentário, para o Dependabot deles (ecossistema `github-actions`) propor as atualizações.
+- Criar uma tag (ex.: `reusable-publish-image-v1`) e trocar os `uses:` dos projetos por ela, ou pelo SHA do commit com a tag em comentário, para o Dependabot deles (ecossistema `github-actions`) propor as atualizações.
 
 ## Prioridade baixa
 
@@ -35,15 +35,15 @@ A `python:slim` traz 11 binários setuid/setgid (`su`, `mount`, `umount`, `passw
 - Remover os bits no `release-py`: `find / -xdev -perm /6000 -type f -exec chmod a-s {} +`.
 - Alternativa ou complemento: recomendar `--security-opt no-new-privileges` no README.
 
-### Usar o workflow reutilizável no CI desta imagem
-O `docker-image.yml` e o `oci-image.yml` repetem a mesma lógica (build por digest, scan, tags datadas). O `docker-image.yml` ainda tem o que o reutilizável não cobre: tags com duas versões (`<GDAL_VERSION>-py<PYTHON_VERSION>`), as categorias de SARIF antigas (histórico do code scanning) e a verificação do `thrift` na attestation.
+### Análises antigas no code scanning
+Com a migração para o workflow reutilizável, as categorias de SARIF mudaram de `docker-scout-<arch>`, `grype-<arch>`, `docker-scout-nopy-<arch>` e `grype-nopy-<arch>` para `docker-scout-<variante>-<arch>` e `grype-<variante>-<arch>`. As análises das categorias antigas não são mais atualizadas, e os alertas delas continuam abertos.
 
-- Avaliar se vale estender o `oci-image.yml` (ex.: `{version}` vindo de mais de um `ARG`, verificação extra no `scan`) para este repositório usá-lo também, e o teste das mudanças passar a ser o build da própria base.
+- Depois do primeiro build com as categorias novas, apagar as análises antigas: listar com `gh api repos/nds-cprm/gdal-oci/code-scanning/analyses --paginate -q '.[] | [.id, .category] | @tsv'` e apagar com `gh api -X DELETE "repos/nds-cprm/gdal-oci/code-scanning/analyses/<id>?confirm_delete=true"`. A API só apaga a análise mais recente de cada categoria por vez e devolve a seguinte em `next_analysis_url`/`confirm_delete_url`, então é preciso repetir até esvaziar a categoria.
 
 ### Imagem `devel` fora do scan
-O job `scan` verifica só o `release-py` e o `release-nopy`. O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.
+Só o `release-py` e o `release-nopy` têm `scan: true` nas variantes do [publish-image.yml](.github/workflows/publish-image.yml). O `devel` também é publicado e recebe atualizações do Debian com menos frequência, já que nele o cache do CI vale.
 
-- Escanear também o `devel`, só como relatório (sem gate), ou com o mesmo gate.
+- Escanear também o `devel` (`scan: true` no job `meta`), com o mesmo gate. Para só reportar, o reutilizável precisaria de um gate por variante.
 
 ### Exemplo Django
 Em [examples/django](examples/django/):

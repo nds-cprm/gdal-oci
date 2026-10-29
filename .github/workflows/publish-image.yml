@@ -1,0 +1,141 @@
+name: Publish image
+
+on:
+  workflow_dispatch:
+    inputs:
+      dispatch-derived:
+        description: After publishing the tags, start the CI of the derived images (dispatch job)
+        type: boolean
+        default: true
+  # weekly rebuild, so the images pick up the Debian/Python fixes of the base images
+  # (scheduled runs only happen on the default branch)
+  schedule:
+  - cron: "0 3 * * 1"
+  #push:
+  #  branches: [ "main" ]
+  #pull_request:
+  #  branches: [ "main" ]
+
+# least privilege for the GITHUB_TOKEN; jobs that need more ask for it
+permissions:
+  contents: read
+
+# Actions are pinned by commit SHA (the comment is the release); Dependabot keeps them up to date
+jobs:
+  # Variants and tags: <GDAL_VERSION>-py<PYTHON_VERSION>[-devel] and <GDAL_VERSION>-nopy, from the ARG
+  # defaults in the Dockerfile. The reusable workflow replaces {version} (ARG GDAL_VERSION); the Python
+  # version is put in the tags here
+  meta:
+    runs-on: ubuntu-24.04
+    outputs:
+      variants: ${{ steps.variants.outputs.variants }}
+    steps:
+    - name: Checkout
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      with:
+        persist-credentials: false
+
+    # release-py first: the dated suffix (.2, .3... on the same day) is checked on the first variant.
+    # release-py writes the cache: its build goes through devel and staging, so its mode=max cache covers
+    # every stage. The release stages (apt-get install of the runtime packages) are always rebuilt, so every
+    # run gets the current Debian fixes even when the cached layers did not change. devel is not scanned
+    # (TODO.md)
+    - name: Variants
+      id: variants
+      run: |
+        PYTHON_VERSION=$(sed -n 's/^ARG PYTHON_VERSION=//p' Dockerfile)
+        test -n "$PYTHON_VERSION"
+        variants=$(jq -cn --arg py "$PYTHON_VERSION" '[
+          {name: "release-py", target: "release-py", tag: "{version}-py\($py)", scan: true,
+           "cache-to": true, "no-cache-filters": ["release-py"],
+           test: "sh .github/scripts/smoke-test.sh \"$IMAGE_REF\""},
+          {name: "devel", target: "devel", tag: "{version}-py\($py)-devel",
+           test: "sh .github/scripts/smoke-test.sh \"$IMAGE_REF\""},
+          {name: "release-nopy", target: "release-nopy", tag: "{version}-nopy", scan: true,
+           "no-cache-filters": ["release-nopy"],
+           test: "sh .github/scripts/smoke-test.sh \"$IMAGE_REF\" release-nopy"}
+        ]')
+        echo "variants=${variants}" >> "$GITHUB_OUTPUT"
+        jq . <<< "$variants"
+
+  # build, test, scan and tags in the reusable workflow of this repository (README, "Workflow
+  # reutilizável"), the same file the derived images call, so every run of this workflow tests it. Gate: a
+  # Critical vulnerability with an available fix that is not covered by vex/gdal-oci.openvex.json fails the
+  # scan, so no tag is created; everything else (High, unfixed Debian CVEs) only goes to code scanning
+  image:
+    needs: meta
+    uses: ./.github/workflows/reusable-publish-image.yml
+    permissions:
+      contents: read
+      # upload of the SARIF reports to code scanning
+      security-events: write
+    secrets:
+      DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+      DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+    with:
+      image: docker.io/ndscprm/gdal
+      version-arg: GDAL_VERSION
+      variants: ${{ needs.meta.outputs.variants }}
+      vex: vex/gdal-oci.openvex.json
+      fail-on-severity: critical
+      # Docker Scout ignores the components built from source (GDAL, Arrow, Thrift...): they only have
+      # generic purls. Grype matches them by CPE from the CycloneDX files in /opt/geosgb/share/sbom, which
+      # only the SBOM attestation includes; thrift being there shows they were picked up
+      sbom-require: thrift
+
+  # Starts the CI (publish-image.yml, workflow_dispatch) of the images built on ndscprm/gdal, now that the
+  # moving tags point to the new build. The GITHUB_TOKEN cannot start workflows in other repositories, so
+  # each job gets a short-lived token of the organization's GitHub App (installed on those repositories),
+  # limited to its own repository and to "Actions: write". The App is set by the DERIVED_IMAGES_APP_CLIENT_ID
+  # variable and the DERIVED_IMAGES_APP_PRIVATE_KEY secret; without the variable the job only warns, so the
+  # publication of the base image is not affected
+  dispatch:
+    needs: image
+    if: github.event_name == 'schedule' || inputs.dispatch-derived
+    strategy:
+      fail-fast: false
+      matrix:
+        repository: [mapserver-oci, mapproxy-oci, pygeoapi-oci]
+    runs-on: ubuntu-24.04
+    # nothing of the GITHUB_TOKEN is used
+    permissions: {}
+    env:
+      REPOSITORY: ${{ github.repository_owner }}/${{ matrix.repository }}
+    steps:
+    - name: GitHub App not configured
+      if: vars.DERIVED_IMAGES_APP_CLIENT_ID == ''
+      run: |
+        echo "::warning::DERIVED_IMAGES_APP_CLIENT_ID is not set: ${REPOSITORY} was not started"
+
+    # revoked at the end of the job (skip-token-revoke is false by default)
+    - name: Create a GitHub App token for ${{ matrix.repository }}
+      id: app-token
+      if: vars.DERIVED_IMAGES_APP_CLIENT_ID != ''
+      uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      with:
+        client-id: ${{ vars.DERIVED_IMAGES_APP_CLIENT_ID }}
+        private-key: ${{ secrets.DERIVED_IMAGES_APP_PRIVATE_KEY }}
+        owner: ${{ github.repository_owner }}
+        repositories: ${{ matrix.repository }}
+        permission-actions: write
+
+    # the derived image is built on the images just published: their full names (dated tag and digest) go
+    # as the image_devel, image_py and image_nopy inputs, which its workflow passes as the GDAL_IMAGE_DEVEL /
+    # GDAL_IMAGE_PY / GDAL_IMAGE_NOPY build args. Every derived workflow declares the three inputs, and
+    # uses those its Dockerfile needs
+    - name: Start the CI of ${{ matrix.repository }}
+      if: steps.app-token.outcome == 'success'
+      env:
+        GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        IMAGE_DEVEL: ${{ fromJSON(needs.image.outputs.images).devel }}
+        IMAGE_PY: ${{ fromJSON(needs.image.outputs.images).release-py }}
+        IMAGE_NOPY: ${{ fromJSON(needs.image.outputs.images).release-nopy }}
+      run: |
+        gh workflow run publish-image.yml --repo "$REPOSITORY" --ref main \
+          -f image_devel="$IMAGE_DEVEL" -f image_py="$IMAGE_PY" -f image_nopy="$IMAGE_NOPY"
+        {
+          echo "CI de \`${REPOSITORY}\` disparado com:"
+          echo "- \`${IMAGE_DEVEL}\`"
+          echo "- \`${IMAGE_PY}\`"
+          echo "- \`${IMAGE_NOPY}\`"
+        } >> "$GITHUB_STEP_SUMMARY"
