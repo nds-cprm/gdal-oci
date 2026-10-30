@@ -1,5 +1,7 @@
 ARG PYTHON_VERSION=3.12
 ARG DEBIAN_VERSION=trixie
+# global, so the release stages can put it in their labels
+ARG GDAL_VERSION=3.12.4
 
 ARG BASE_DIR=/opt/geosgb
 
@@ -221,7 +223,7 @@ RUN --mount=type=bind,source=requirements/gdal-build.txt,target=/tmp/gdal-build.
     ${BASE_DIR}/venv/bin/pip install --no-cache-dir --require-hashes -r /tmp/gdal-build.txt
 
 # Compile and install GDAL
-ARG GDAL_VERSION=3.12.4
+ARG GDAL_VERSION
 # SHA256 of gdal-${GDAL_VERSION}.tar.gz, taken from a tarball whose .sig was verified against the
 # GPG key published in GDAL's docs (doc/source/download.rst, fingerprint 7B130E955B44D87CCE2765F0DBD81FF52EC2A42A)
 ARG GDAL_SHA256=68844ae29557b7efae4292c3b4cb3a3b8a79d14b765b89c5a7b17cbae7fa715a
@@ -361,6 +363,20 @@ COPY --chmod=755 docker-entrypoint.sh /docker-entrypoint.sh
 RUN mkdir -p /docker-entrypoint.d
 COPY --chmod=644 docker-entrypoint.d/10-enable-nss-wrapper.sh /docker-entrypoint.d/
 
+ARG PYTHON_VERSION
+ARG DEBIAN_VERSION
+# OCI labels; created and revision come from the CI. Derived images inherit them, so they set their own
+LABEL org.opencontainers.image.title="GDAL" \
+      org.opencontainers.image.description="GDAL compilado a partir do código-fonte, com bindings Python, Arrow/Parquet e Oracle Instant Client: imagem de desenvolvimento, com compiladores, headers e código-fonte" \
+      org.opencontainers.image.version="${GDAL_VERSION}" \
+      org.opencontainers.image.vendor="SGB/CPRM" \
+      org.opencontainers.image.authors="Carlos Eduardo Mota <carlos.mota@sgb.gov.br>" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.url="https://hub.docker.com/r/ndscprm/gdal" \
+      org.opencontainers.image.documentation="https://github.com/nds-cprm/gdal-oci#readme" \
+      org.opencontainers.image.source="https://github.com/nds-cprm/gdal-oci" \
+      org.opencontainers.image.base.name="docker.io/library/python:${PYTHON_VERSION}-${DEBIAN_VERSION}"
+
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
 # setting ENTRYPOINT resets the CMD inherited from the python image
@@ -440,6 +456,20 @@ ENV GDAL_DATA=${BASE_DIR}/share/gdal \
 COPY --from=staging /docker-entrypoint.sh /docker-entrypoint.sh
 COPY --from=staging /docker-entrypoint.d /docker-entrypoint.d
 
+ARG GDAL_VERSION
+ARG DEBIAN_VERSION
+# OCI labels; created and revision come from the CI. Derived images inherit them, so they set their own
+LABEL org.opencontainers.image.title="GDAL" \
+      org.opencontainers.image.description="GDAL compilado a partir do código-fonte, com Arrow/Parquet e Oracle Instant Client, sem Python" \
+      org.opencontainers.image.version="${GDAL_VERSION}" \
+      org.opencontainers.image.vendor="SGB/CPRM" \
+      org.opencontainers.image.authors="Carlos Eduardo Mota <carlos.mota@sgb.gov.br>" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.url="https://hub.docker.com/r/ndscprm/gdal" \
+      org.opencontainers.image.documentation="https://github.com/nds-cprm/gdal-oci#readme" \
+      org.opencontainers.image.source="https://github.com/nds-cprm/gdal-oci" \
+      org.opencontainers.image.base.name="docker.io/library/debian:${DEBIAN_VERSION}-slim"
+
 ENTRYPOINT ["/docker-entrypoint.sh"]
 
 # setting ENTRYPOINT resets the CMD inherited from the debian image
@@ -481,6 +511,21 @@ ENV GDAL_DATA=${BASE_DIR}/share/gdal \
 # same entrypoint as devel (COPY --from keeps the modes set there)
 COPY --from=staging /docker-entrypoint.sh /docker-entrypoint.sh
 COPY --from=staging /docker-entrypoint.d /docker-entrypoint.d
+
+ARG GDAL_VERSION
+ARG PYTHON_VERSION
+ARG DEBIAN_VERSION
+# OCI labels; created and revision come from the CI. Derived images inherit them, so they set their own
+LABEL org.opencontainers.image.title="GDAL" \
+      org.opencontainers.image.description="GDAL compilado a partir do código-fonte, com bindings Python, Arrow/Parquet (pyarrow) e Oracle Instant Client" \
+      org.opencontainers.image.version="${GDAL_VERSION}" \
+      org.opencontainers.image.vendor="SGB/CPRM" \
+      org.opencontainers.image.authors="Carlos Eduardo Mota <carlos.mota@sgb.gov.br>" \
+      org.opencontainers.image.licenses="Apache-2.0" \
+      org.opencontainers.image.url="https://hub.docker.com/r/ndscprm/gdal" \
+      org.opencontainers.image.documentation="https://github.com/nds-cprm/gdal-oci#readme" \
+      org.opencontainers.image.source="https://github.com/nds-cprm/gdal-oci" \
+      org.opencontainers.image.base.name="docker.io/library/python:${PYTHON_VERSION}-slim-${DEBIAN_VERSION}"
 
 ENTRYPOINT ["/docker-entrypoint.sh"]
 

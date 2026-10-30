@@ -110,6 +110,7 @@ Etapas do `devel`, em ordem:
 
 ## Convenções
 
+- **Labels OCI:** os três estágios publicados (`devel`, `release-nopy` e `release-py`) têm um `LABEL` com `title`, `description` (uma por estágio), `version` (o `ARG GDAL_VERSION`, global para isso), `vendor`, `authors`, `licenses`, `url` (a página no Docker Hub), `documentation` (o README no GitHub), `source` e `base.name` (a imagem `python` ou `debian` do `FROM`). O CI acrescenta `created` e `revision`. As imagens derivadas herdam esses labels, então precisam definir todas as chaves no próprio `LABEL`, como as três do projeto fazem.
 - `SHELL` usa `bash -o pipefail` no `devel` (volta para `/bin/sh -c` no final) e no `staging`; o `release-py` usa o shell padrão.
 - Cada `RUN` com apt faz `update`, `install --no-install-recommends --no-install-suggests`, `autoremove` e apaga `/var/lib/apt/lists/*`. O primeiro `RUN` do `devel` e o `RUN` de pacotes do `release-py` fazem também `DEBIAN_FRONTEND=noninteractive apt-get -y upgrade` logo após o `update`, para aplicar nos pacotes da imagem base as correções do Debian publicadas depois dela.
 - Todo download externo é verificado contra um valor fixado no repositório (SHA256 do Oracle, do Thrift, do Arrow e do GDAL no Dockerfile; hashes dos pacotes do venv em `requirements/gdal-build.txt`), nunca contra um checksum baixado do mesmo servidor. Ao atualizar uma versão, atualize também o checksum/fingerprint correspondente.
