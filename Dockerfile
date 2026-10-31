@@ -295,6 +295,8 @@ RUN --mount=type=bind,source=sbom/cyclonedx.py,target=/tmp/cyclonedx.py \
         -DOGR_ENABLE_DRIVER_MVT=ON \
         # Elasticsearch (vector, over HTTP via curl)
         -DOGR_ENABLE_DRIVER_ELASTIC=ON \
+        # CSV
+        -DOGR_ENABLE_DRIVER_CSV=ON \
         # KML (expat-based) and LIBKML (KML + KMZ read/write)
         -DGDAL_USE_EXPAT=ON \
         -DGDAL_USE_LIBKML=ON \
