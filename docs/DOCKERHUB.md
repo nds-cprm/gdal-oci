@@ -172,6 +172,7 @@ See GDAL's [security considerations](https://gdal.org/en/stable/user/security.ht
 - [`ndscprm/mapserver`](https://hub.docker.com/r/ndscprm/mapserver): MapServer as a FastCGI server.
 - [`ndscprm/mapproxy`](https://hub.docker.com/r/ndscprm/mapproxy): MapProxy on uWSGI.
 - [`ndscprm/pygeoapi`](https://hub.docker.com/r/ndscprm/pygeoapi): pygeoapi on uWSGI.
+- [`ndscprm/geonode-base`](https://hub.docker.com/r/ndscprm/geonode-base): base image for GeoNode.
 
 They are rebuilt automatically every time these images are published.
 

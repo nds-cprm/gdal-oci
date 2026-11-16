@@ -1,6 +1,6 @@
 # Reusable workflow: builds, tests, scans and publishes a multi-platform image made of one or more
 # variants (Dockerfile stages), e.g. a release and its -devel. Used by the images built on top of
-# ndscprm/gdal (mapserver-oci, mapproxy-oci, pygeoapi-oci, by @main) and by the base image itself
+# ndscprm/gdal (mapserver-oci, mapproxy-oci, pygeoapi-oci, geonode-base, by @main) and by the base image itself
 # (publish-image.yml of this repository); see the "Workflow reutilizável" section of the README for the
 # inputs and an example.
 #

@@ -403,7 +403,7 @@ O Apache Arrow/Parquet é compilado do código-fonte, e não instalado do reposi
 
 ## Workflow reutilizável
 
-O [reusable-publish-image.yml](.github/workflows/reusable-publish-image.yml) é um workflow reutilizável (`workflow_call`) que constrói, testa, analisa e publica uma imagem. É usado pelas imagens construídas sobre esta, como a [mapserver-oci](https://github.com/nds-cprm/mapserver-oci), a [mapproxy-oci](https://github.com/nds-cprm/mapproxy-oci) e a [pygeoapi-oci](https://github.com/nds-cprm/pygeoapi-oci), e pelo próprio CI desta imagem ([publish-image.yml](.github/workflows/publish-image.yml)), então cada build da base também o testa. Jobs:
+O [reusable-publish-image.yml](.github/workflows/reusable-publish-image.yml) é um workflow reutilizável (`workflow_call`) que constrói, testa, analisa e publica uma imagem. É usado pelas imagens construídas sobre esta, como a [mapserver-oci](https://github.com/nds-cprm/mapserver-oci), a [mapproxy-oci](https://github.com/nds-cprm/mapproxy-oci), a [pygeoapi-oci](https://github.com/nds-cprm/pygeoapi-oci) e a [geonode-base](https://github.com/nds-cprm/geonode-base), e pelo próprio CI desta imagem ([publish-image.yml](.github/workflows/publish-image.yml)), então cada build da base também o testa. Jobs:
 
 1. **`prepare`**: resolve a versão (entrada `version` ou a linha `ARG <version-arg>=<versão>` do Dockerfile, validada por `version-pattern`) e confere as variantes.
 2. **`build`**: um job por arquitetura, em runner nativo (`amd64` em `ubuntu-24.04` e `arm64` em `ubuntu-24.04-arm`, sem QEMU). Todas as variantes saem de uma única chamada do Bake, então os estágios que elas têm em comum são construídos uma vez só: a `-devel` e a release saem do mesmo build. As imagens são publicadas só por digest, com attestations de SBOM e de provenance, e o `test` de cada variante roda no próprio runner.
@@ -483,7 +483,7 @@ O cache do GHA e os artifacts de digests levam o nome da imagem (`<nome>-<arch>`
 
 ## Rebuild das imagens derivadas
 
-As imagens derivadas (mapserver-oci, mapproxy-oci e pygeoapi-oci) não têm build agendado próprio. Quem as reconstrói é o CI deste repositório: depois que o workflow reutilizável publica as tags novas da `ndscprm/gdal`, o job `dispatch` do [publish-image.yml](.github/workflows/publish-image.yml) dispara o `publish-image.yml` de cada uma (`workflow_dispatch` no branch `main`). Uma base nova invalida todas as camadas, então cada imagem derivada é reconstruída por inteiro, com os pacotes atuais do Debian e do PyPI.
+As imagens derivadas (mapserver-oci, mapproxy-oci, pygeoapi-oci e geonode-base) não têm build agendado próprio. Quem as reconstrói é o CI deste repositório: depois que o workflow reutilizável publica as tags novas da `ndscprm/gdal`, o job `dispatch` do [publish-image.yml](.github/workflows/publish-image.yml) dispara o `publish-image.yml` de cada uma (`workflow_dispatch` no branch `main`). Uma base nova invalida todas as camadas, então cada imagem derivada é reconstruída por inteiro, com os pacotes atuais do Debian e do PyPI.
 
 - O disparo só acontece se a base foi publicada. Se o build, o smoke test ou o gate de vulnerabilidades da base falhar, nenhuma tag é criada e as derivadas não são disparadas.
 - No rebuild semanal (`schedule`), o disparo é sempre feito. No disparo manual, depende da opção **dispatch-derived** (marcada por padrão); desmarque-a para testar a base sem reconstruir as derivadas.
@@ -501,7 +501,7 @@ Feito uma vez, por um owner da organização `nds-cprm`.
    - **Repository permissions**: só **Actions: Read and write** (*Metadata: Read-only* é marcada automaticamente). Nenhuma permissão de organização ou de conta;
    - **Where can this GitHub App be installed?**: *Only on this account*.
 2. **Anote o Client ID e gere a chave.** Na página do App (*General*), copie o **Client ID** (começa com `Iv`) e, em *Private keys*, clique em *Generate a private key*. O navegador baixa um arquivo `.pem`.
-3. **Instale o App nos repositórios derivados.** Em *Install App*, instale na organização com *Only select repositories*: `mapserver-oci`, `mapproxy-oci` e `pygeoapi-oci`. O `gdal-oci` não precisa estar na lista: o token é usado nos outros repositórios.
+3. **Instale o App nos repositórios derivados.** Em *Install App*, instale na organização com *Only select repositories*: `mapserver-oci`, `mapproxy-oci`, `pygeoapi-oci` e `geonode-base`. O `gdal-oci` não precisa estar na lista: o token é usado nos outros repositórios.
 4. **Configure este repositório.** Em *Settings → Secrets and variables → Actions* do `gdal-oci`:
    - aba *Variables*: variável `DERIVED_IMAGES_APP_CLIENT_ID` com o Client ID. É uma variável, não um secret, porque não é sigilosa e o workflow a lê num `if`;
    - aba *Secrets*: secret `DERIVED_IMAGES_APP_PRIVATE_KEY` com o conteúdo inteiro do `.pem`, incluindo as linhas `-----BEGIN` e `-----END`.

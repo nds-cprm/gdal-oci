@@ -95,7 +95,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        repository: [mapserver-oci, mapproxy-oci, pygeoapi-oci]
+        repository: [mapserver-oci, mapproxy-oci, pygeoapi-oci, geonode-base]
     runs-on: ubuntu-24.04
     # nothing of the GITHUB_TOKEN is used
     permissions: {}
