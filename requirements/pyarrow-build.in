@@ -7,8 +7,8 @@
 # below makes pip-compile fail if they differ, and the Dockerfile checks the installed versions. Dependabot
 # ignores numpy (a PR changing only one of the files would break the build): it is updated by hand in both
 -c gdal-build.in
-cython==3.3.0
+cython==3.3.1
 libcst==1.9.0
 numpy==2.5.4
-scikit-build-core==1.1.1
+scikit-build-core==1.1.2
 setuptools-scm==10.3.4
